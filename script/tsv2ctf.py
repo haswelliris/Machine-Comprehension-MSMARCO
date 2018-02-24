@@ -66,10 +66,10 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
     unk_c = chars[unk]
 
     if is_test:
-        #uid, title, context, query = line.split('\t')
+        uid, title, context, query = line.split('\t')
         
         # change for dev.tsv
-        uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer = line.split('\t')
+        #uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer = line.split('\t')
         answer = ''
         begin_answer, end_answer = '0', '1'
         # change for dev.tsv
