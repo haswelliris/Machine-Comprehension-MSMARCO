@@ -97,7 +97,6 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
                 yield {} # need to generate empty batch for distributed training
 
 def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
-
     training_config = importlib.import_module(config_file).training_config
     gpu_pad = training_config['gpu_pad']
     gpu_cnt = training_config['gpu_cnt']
@@ -105,8 +104,8 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     my_gpu_id = (my_rank+gpu_pad)%gpu_cnt
     print("rank = "+str(my_rank)+", using gpu "+str(my_gpu_id)+" of "+str(gpu_cnt))
     C.try_set_default_device(C.gpu(my_gpu_id))
-    
-    
+    #C.try_set_default_device(C.gpu(0))
+
     polymath = PolyMath(config_file)
     z, loss = polymath.model()
 
@@ -171,7 +170,19 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
             if epoch_stat['best_val_err'] > val_err:
                 epoch_stat['best_val_err'] = val_err
                 epoch_stat['best_since'] = 0
-                trainer.save_checkpoint(model_file)
+                os.system("ls -la >> log.log")
+                os.system("ls -la ./Models >> log.log")
+                save_flag = True
+                fail_cnt = 0
+                while save_flag:
+                    if fail_cnt > 100:
+                        print("ERROR: failed to save models")
+                        break
+                    try:
+                        trainer.save_checkpoint(model_file)
+                        save_flag = False
+                    except:
+                        fail_cnt = fail_cnt + 1
                 for p in trainer.model.parameters:
                     p.value = temp[p.uid]
             else:
@@ -317,6 +328,14 @@ def get_answer(raw_text, tokens, start, end):
         pdb.set_trace()
 
 def test(test_data, model_path, model_file, config_file):
+    training_config = importlib.import_module(config_file).training_config
+    gpu_pad = training_config['gpu_pad']
+    gpu_cnt = training_config['gpu_cnt']
+    my_rank = C.Communicator.rank()
+    my_gpu_id = (my_rank+gpu_pad)%gpu_cnt
+    print("rank = "+str(my_rank)+", using gpu "+str(my_gpu_id)+" of "+str(gpu_cnt))
+    C.try_set_default_device(C.gpu(my_gpu_id))
+   
     polymath = PolyMath(config_file)
     model = C.load_model(os.path.join(model_path, model_file if model_file else model_name))
     begin_logits = model.outputs[0]
