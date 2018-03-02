@@ -6,3 +6,7 @@ Learning rate per minibatch: 2.0
  Minibatch[   1- 500]: loss = 12.326015 * 556, metric = 0.00% * 556;
  Minibatch[ 501-1000]: loss = 12.287681 * 565, metric = 0.00% * 565;
  Minibatch[1001-1500]: loss = 12.321287 * 552, metric = 0.00% * 552;
+ Minibatch[1501-2000]: loss = 12.366828 * 559, metric = 0.00% * 559;
+ Minibatch[2001-2500]: loss = 12.356403 * 552, metric = 0.00% * 552;
+ Minibatch[2501-3000]: loss = 12.340476 * 550, metric = 0.00% * 550;
+ Minibatch[3001-3500]: loss = 12.375638 * 551, metric = 0.00% * 551;
