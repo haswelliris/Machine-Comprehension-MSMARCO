@@ -1,5 +1,7 @@
 *.model
-*.cpk
+*.pkl
+*.ctf
+*.txt
 model
 ms_marco_eval/*test.json
 ms_marco_eval/*dev.json

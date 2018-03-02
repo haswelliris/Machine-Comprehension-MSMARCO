@@ -9,7 +9,7 @@ clone from `https://github.com/Microsoft/CNTK/tree/nikosk/bidaf/Examples/Text/Bi
 自行复制训练所需数据集和单词编码集
 ```
 vocabs.pkl
-glove.6B.100d.txt dev.ctf
+glove.6B.100d.txt
 dev.ctf
 test.ctf
 train.ctf
