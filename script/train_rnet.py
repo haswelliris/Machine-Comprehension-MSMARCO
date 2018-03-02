@@ -98,8 +98,6 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
 
 import rnetmodel
 def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
-    polymath = rnetmodel
-    z, loss = rnetmodel.create_rnet()
     training_config = importlib.import_module(config_file).training_config
     gpu_pad = training_config['gpu_pad']
     gpu_cnt = training_config['gpu_cnt']
@@ -108,7 +106,8 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     print("rank = "+str(my_rank)+", using gpu "+str(my_gpu_id)+" of "+str(gpu_cnt))
     C.try_set_default_device(C.gpu(my_gpu_id))
     #C.try_set_default_device(C.gpu(0))
-
+    polymath = rnetmodel
+    z, loss = rnetmodel.create_rnet()
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']
 
@@ -221,7 +220,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                     data = mb_source.next_minibatch(minibatch_size*C.Communicator.num_workers(), input_map=input_map, num_data_partitions=C.Communicator.num_workers(), partition_index=C.Communicator.rank())
                 else:
                     data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
-                print(data)
+                #print(data)
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
                 dummy.eval()

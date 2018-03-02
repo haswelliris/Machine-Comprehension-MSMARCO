@@ -3,14 +3,14 @@ data_config = {
     'word_count_threshold' : 10,
     'char_count_threshold' : 50,
     'pickle_file' : 'vocabs.pkl',
-    'glove_file': 'glove.6B.50d.txt'
+    'glove_file': 'glove.6B.100d.txt'
 }
 
 model_config = {
-    'hidden_dim'     	: 20,
-    'char_convs'     	: 50,
+    'hidden_dim'     	: 100,
+    'char_convs'     	: 100,
     'char_emb_dim'   	: 8,
-    'word_emb_dim'      : 50,
+    'word_emb_dim'      : 100,
     'dropout'        	: 0.2,
     'highway_layers' 	: 2,
     'two_step'          : True,
@@ -19,8 +19,8 @@ model_config = {
 
 training_config = {
     'tensorboard_logdir': 'tensorboard-logs', 
-    'minibatch_size'    : 1,    # in samples when using ctf reader, per worker
-    'epoch_size'        : 82325,   # in sequences, when using ctf reader
+    'minibatch_size'    : 1024,    # in samples when using ctf reader, per worker
+    'epoch_size'        : 8192,   # in sequences, when using ctf reader
     'log_freq'          : 500,     # in minibatchs
     'max_epochs'        : 300,
     'lr'                : 2,

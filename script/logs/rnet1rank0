@@ -1,0 +1,8 @@
+./logs/rnet1rank0
+CNTKCommandTrainInfo: train : 300
+CNTKCommandTrainInfo: CNTKNoMoreCommands_Total : 300
+CNTKCommandTrainBegin: train
+Learning rate per minibatch: 2.0
+ Minibatch[   1- 500]: loss = 12.326015 * 556, metric = 0.00% * 556;
+ Minibatch[ 501-1000]: loss = 12.287681 * 565, metric = 0.00% * 565;
+ Minibatch[1001-1500]: loss = 12.321287 * 552, metric = 0.00% * 552;
