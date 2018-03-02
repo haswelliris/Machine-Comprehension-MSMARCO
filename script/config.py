@@ -17,9 +17,10 @@ model_config = {
 
 training_config = {
 # batchsize 16384 seqs 24
+    'tensorboard_logdir': 'tensorboard-logs',
     'minibatch_size'    : 24576,   #24576 8192 in samples when using ctf reader, per worker
-    'epoch_size'        : 82325,   #82325 in sequences, when using ctf reader
-    'log_freq'          : 2000,     #500 in minibatchs
+    'epoch_size'        : 42325,   #82325 in sequences, when using ctf reader
+    'log_freq'          : 500,     #500 in minibatchs
     'max_epochs'        : 600,
     'lr'                : 2,
     'train_data'        : 'train.ctf',  # or 'train.tsv'
@@ -29,5 +30,5 @@ training_config = {
     'minibatch_seqs'    : 24,      #32 16 num sequences of minibatch, when using tsv reader, per worker
     'distributed_after' : 0,       # num sequences after which to start distributed training
     'gpu_pad'           : 0, #emmmmmmm
-    'gpu_cnt'           : 4, # number of gpus
+    'gpu_cnt'           : 1, # number of gpus
 }

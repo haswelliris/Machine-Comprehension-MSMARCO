@@ -119,6 +119,13 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                             log_to_file = log_file,
                             rank = C.Communicator.rank(),
                             gen_heartbeat = gen_heartbeat)]
+    # add tensorboard writer for visualize
+    tensorboard_writer = C.logging.TensorBoardProgressWriter(
+                             freq=10,
+                             log_dir=training_config['tensorboard_logdir'],
+                             rank = C.Communicator.rank(),
+                             model = z)
+    progress_writers.append(tensorboard_writer)
 
     lr = C.learning_parameter_schedule(training_config['lr'], minibatch_size=None, epoch_size=None)
 
