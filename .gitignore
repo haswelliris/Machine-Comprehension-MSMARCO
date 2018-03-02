@@ -1,0 +1,6 @@
+*.model
+*.cpk
+model
+ms_marco_eval/*test.json
+ms_marco_eval/*dev.json
+script/Models
