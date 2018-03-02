@@ -163,7 +163,7 @@ rouge_l: 0.559090126351
 ```
 成绩在0.559左右，非常好
 
-#### dev.tsv : 0.2743
+#### dev.tsv
 input file: dev.tsv(0219_dev.json)  
 validated file: dev_as_references.json
 ```
@@ -217,7 +217,7 @@ rouge_l: 0.553013702372
 ```
 成绩在0.553左右，不如上一个版本，应该是没有训练完成导致精确度不够高的原因。
 
-#### dev.tsv : 0.2743
+#### dev.tsv
 input file: dev.tsv(0224_dev.json)  
 validated file: dev_as_references.json
 ```
@@ -234,3 +234,45 @@ rouge_l: 0.319693731523
 
 ```
 dev下面还是很一般。
+
+## 第六次:tesla P100
+### 主要改动
+1. 新增tensorboard，使训练过程可视化，输出保存在`script/tensorboard-logs`文件夹里
+2. 训练使用--logdir参数，保存log输出到`logs`文件夹
+3. 迁移到dell服务器，使用tesla P100进行单卡训练，速度又变快了  
+  
+`config.py`改动如下
+```
+training_config = {
+# batchsize 16384 seqs 24
+    'tensorboard_logdir': 'tensorboard-logs',
+    'minibatch_size'    : 24576,   #24576 8192 in samples when using ctf reader, per worker
+    'epoch_size'        : 42325,   #82325 in sequences, when using ctf reader
+    'log_freq'          : 500,     #500 in minibatchs
+    'max_epochs'        : 600,
+    'lr'                : 2,
+    'train_data'        : 'train.ctf',  # or 'train.tsv'
+    'val_data'          : 'dev.ctf',
+    'val_interval'      : 1,       # interval in epochs to run validation
+    'stop_after'        : 2,       # num epochs to stop if no CV improvement
+    'minibatch_seqs'    : 24,      #32 16 num sequences of minibatch, when using tsv reader, per worker
+    'distributed_after' : 0,       # num sequences after which to start distributed training
+    'gpu_pad'           : 0, #emmmmmmm
+    'gpu_cnt'           : 1, # number of gpus
+}
+```
+### 最终评价
+只训练了7小时，效果很一般
+```
+sh ./run.sh dev_as_references.json 0302_dev.json
+{'testlen': 90258, 'reflen': 102237, 'guess': [90258, 85848, 81733, 77660], 'correct': [32149,
+ 16430, 13472, 12054]}
+ratio: 0.8828310689867573
+############################ 
+bleu_1: 0.3119194095480127
+bleu_2: 0.22864157835651136
+bleu_3: 0.1961410805365376
+bleu_4: 0.1789575527634363
+rouge_l: 0.283029872284
+############################ 
+```
