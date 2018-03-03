@@ -1,0 +1,7 @@
+./logs/v0.2.1rank0
+CNTKCommandTrainInfo: train : 300
+CNTKCommandTrainInfo: CNTKNoMoreCommands_Total : 300
+CNTKCommandTrainBegin: train
+Learning rate per minibatch: 0.1
+ Minibatch[   1- 500]: loss = 12.234881 * 503, metric = 0.00% * 503;
+Finished Epoch[1 of 300]: [Training] loss = 12.200826 * 1000, metric = 0.00% * 1000 600.062s (  1.7 samples/s);

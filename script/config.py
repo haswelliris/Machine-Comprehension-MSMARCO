@@ -19,12 +19,12 @@ model_config = {
 
 training_config = {
     'tensorboard_logdir': 'tensorboard-logs',
-    'tensorboard_freq'  : 2, # tensorboard record frequence 
-    'minibatch_size'    : 1024,    # in samples when using ctf reader, per worker
+    'tensorboard_freq'  : 1, # tensorboard record frequence 
+    'minibatch_size'    : 24,    # in samples when using ctf reader, per worker
     'epoch_size'        : 1000,   # in sequences, when using ctf reader
     'log_freq'          : 500,     # in minibatchs
     'max_epochs'        : 300,
-    'lr'                : 1,
+    'lr'                : 0.1,
     'train_data'        : 'train.ctf',  # or 'train.tsv'
     'val_data'          : 'dev.ctf',
     'val_interval'      : 1,       # interval in epochs to run validation
