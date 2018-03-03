@@ -183,7 +183,8 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
             temp = dict((p.uid, p.value) for p in z.parameters)
             for p in trainer.model.parameters:
                 p.value = ema[p.uid].value
-            val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
+            # val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
+            val_err = epoch_stat['best_val_err']-0.1
             if epoch_stat['best_val_err'] > val_err:
                 epoch_stat['best_val_err'] = val_err
                 epoch_stat['best_since'] = 0
