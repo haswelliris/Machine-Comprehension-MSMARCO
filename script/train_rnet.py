@@ -10,6 +10,7 @@ import time
 import json
 
 model_name = "pm.model"
+log_file_name = 'default_output'
 
 def argument_by_name(func, name):
     found = [arg for arg in func.arguments if arg.name == name]
@@ -99,6 +100,7 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
 import rnetmodel
 def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
     training_config = importlib.import_module(config_file).training_config
+    # config for using multi GPUs
     if training_config['multi_gpu']:
         gpu_pad = training_config['gpu_pad']
         gpu_cnt = training_config['gpu_cnt']
@@ -108,8 +110,13 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         C.try_set_default_device(C.gpu(my_gpu_id))
     else:
         C.try_set_default_device(C.gpu(0))
+    
     polymath = rnetmodel
     z, loss = rnetmodel.create_rnet()
+    # outputs while training
+    normal_log = os.path.join(data_path,training_config['logdir'],log_file)
+    # tensorboard files' dir
+    tensorboard_logdir = os.path.join(data_path,training_config['logdir'],log_file)
 
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']
@@ -118,13 +125,13 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                             num_epochs = max_epochs,
                             freq = log_freq,
                             tag = 'Training',
-                            log_to_file = log_file,
+                            log_to_file = normal_log,
                             rank = C.Communicator.rank(),
                             gen_heartbeat = gen_heartbeat)]
     # add tensorboard writer for visualize
     tensorboard_writer = C.logging.TensorBoardProgressWriter(
                              freq=training_config['tensorboard_freq'],
-                             log_dir=training_config['tensorboard_logdir'],
+                             log_dir=tensorboard_logdir,
                              rank = C.Communicator.rank(),
                              model = z)
     progress_writers.append(tensorboard_writer)
@@ -165,7 +172,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     if restore and os.path.isfile(model_file):
         trainer.restore_from_checkpoint(model_file)
         #after restore always re-evaluate
-        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath)
+        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
 
     def post_epoch_work(epoch_stat):
         trainer.summarize_training_progress()
@@ -176,7 +183,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
             temp = dict((p.uid, p.value) for p in z.parameters)
             for p in trainer.model.parameters:
                 p.value = ema[p.uid].value
-            val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath)
+            val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
             if epoch_stat['best_val_err'] > val_err:
                 epoch_stat['best_val_err'] = val_err
                 epoch_stat['best_since'] = 0
@@ -260,7 +267,8 @@ def symbolic_best_span(begin, end):
     running_max_begin = C.layers.Recurrence(C.element_max, initial_state=-float("inf"))(begin)
     return C.layers.Fold(C.element_max, initial_state=C.constant(-1e+30))(running_max_begin + end)
 
-def validate_model(test_data, model, polymath):
+def validate_model(test_data, model, polymath, config_file):
+    print("start validate")
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
     loss         = model.outputs[2]
@@ -290,8 +298,9 @@ def validate_model(test_data, model, polymath):
     s = lambda x: C.reduce_sum(x, axis=C.Axis.all_axes())
     stats = C.splice(s(f1), s(exact_match), s(precision), s(recall), s(overlap), s(begin_match), s(end_match))
 
+    training_config = importlib.import_module(config_file).training_config
     # Evaluation parameters
-    minibatch_size = 8192
+    minibatch_size = training_config['minibatch_size']
     num_sequences = 0
 
     stat_sum = 0
@@ -349,13 +358,16 @@ def get_answer(raw_text, tokens, start, end):
 
 def test(test_data, model_path, model_file, config_file):
     training_config = importlib.import_module(config_file).training_config
-    gpu_pad = training_config['gpu_pad']
-    gpu_cnt = training_config['gpu_cnt']
-    my_rank = C.Communicator.rank()
-    my_gpu_id = (my_rank+gpu_pad)%gpu_cnt
-    print("rank = "+str(my_rank)+", using gpu "+str(my_gpu_id)+" of "+str(gpu_cnt))
-    C.try_set_default_device(C.gpu(my_gpu_id))
-
+    # config for using multi GPUs
+    if training_config['multi_gpu']:
+        gpu_pad = training_config['gpu_pad']
+        gpu_cnt = training_config['gpu_cnt']
+        my_rank = C.Communicator.rank()
+        my_gpu_id = (my_rank+gpu_pad)%gpu_cnt
+        print("rank = "+str(my_rank)+", using gpu "+str(my_gpu_id)+" of "+str(gpu_cnt))
+        C.try_set_default_device(C.gpu(my_gpu_id))
+    else:
+        C.try_set_default_device(C.gpu(0))
     polymath = rnetmodel
     model = C.load_model(os.path.join(model_path, model_file if model_file else model_name))
     begin_logits = model.outputs[0]
@@ -399,7 +411,7 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-datadir', '--datadir', help='Data directory where the dataset is located', required=False, default=data_path)
     parser.add_argument('-outputdir', '--outputdir', help='Output directory for checkpoints and models', required=False, default=None)
-    parser.add_argument('-logdir', '--logdir', help='Log file', required=False, default=None)
+    parser.add_argument('-logfile', '--logfile', help='Log file version', required=False, default=log_file_name)
     parser.add_argument('-profile', '--profile', help="Turn on profiling", action='store_true', default=False)
     parser.add_argument('-genheartbeat', '--genheartbeat', help="Turn on heart-beat for philly", action='store_true', default=False)
     parser.add_argument('-config', '--config', help='Config file', required=False, default='config')
@@ -422,7 +434,7 @@ if __name__=='__main__':
         test(test_data, model_path, test_model, args['config'])
     else:
         try:
-            train(data_path, model_path, args['logdir'], args['config'],
+            train(data_path, model_path, args['logfile'], args['config'],
                 restore = not args['restart'],
                 profiling = args['profile'],
                 gen_heartbeat = args['genheartbeat'])
