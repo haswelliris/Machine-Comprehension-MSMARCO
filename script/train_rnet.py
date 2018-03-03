@@ -98,9 +98,18 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
 
 import rnetmodel
 def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
+    training_config = importlib.import_module(config_file).training_config
+    if training_config['multi_gpu']:
+        gpu_pad = training_config['gpu_pad']
+        gpu_cnt = training_config['gpu_cnt']
+        my_rank = C.Communicator.rank()
+        my_gpu_id = (my_rank+gpu_pad)%gpu_cnt
+        print("rank = "+str(my_rank)+", using gpu "+str(my_gpu_id)+" of "+str(gpu_cnt))
+        C.try_set_default_device(C.gpu(my_gpu_id))
+    else:
+        C.try_set_default_device(C.gpu(0))
     polymath = rnetmodel
     z, loss = rnetmodel.create_rnet()
-    training_config = importlib.import_module(config_file).training_config
 
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']
@@ -112,6 +121,13 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                             log_to_file = log_file,
                             rank = C.Communicator.rank(),
                             gen_heartbeat = gen_heartbeat)]
+    # add tensorboard writer for visualize
+    tensorboard_writer = C.logging.TensorBoardProgressWriter(
+                             freq=training_config['tensorboard_freq'],
+                             log_dir=training_config['tensorboard_logdir'],
+                             rank = C.Communicator.rank(),
+                             model = z)
+    progress_writers.append(tensorboard_writer)
 
     lr = C.learning_parameter_schedule(training_config['lr'], minibatch_size=None, epoch_size=None)
 
@@ -143,7 +159,8 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     epoch_stat = {
         'best_val_err' : 100,
         'best_since'   : 0,
-        'val_since'    : 0}
+        'val_since'    : 0
+        'record_num'   : 0}
 
     if restore and os.path.isfile(model_file):
         trainer.restore_from_checkpoint(model_file)
@@ -163,7 +180,22 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
             if epoch_stat['best_val_err'] > val_err:
                 epoch_stat['best_val_err'] = val_err
                 epoch_stat['best_since'] = 0
-                trainer.save_checkpoint(model_file)
+                os.system("ls -la >> log.log")
+                os.system("ls -la ./Models >> log.log")
+                save_flag = True
+                fail_cnt = 0
+                while save_flag:
+                    if fail_cnt > 100:
+                        print("ERROR: failed to save models")
+                        break
+                    try:
+                        trainer.save_checkpoint(model_file)
+                        epoch_stat['record_num']+=1
+                        record_file = os.path.join(model_path,str(epoch_stat['record_num'])+'-'+model_name)
+                        trainer.save_checkpoint(record_file)
+                        save_flag = False
+                    except:
+                        fail_cnt = fail_cnt + 1
                 for p in trainer.model.parameters:
                     p.value = temp[p.uid]
             else:
@@ -316,6 +348,14 @@ def get_answer(raw_text, tokens, start, end):
         pdb.set_trace()
 
 def test(test_data, model_path, model_file, config_file):
+    training_config = importlib.import_module(config_file).training_config
+    gpu_pad = training_config['gpu_pad']
+    gpu_cnt = training_config['gpu_cnt']
+    my_rank = C.Communicator.rank()
+    my_gpu_id = (my_rank+gpu_pad)%gpu_cnt
+    print("rank = "+str(my_rank)+", using gpu "+str(my_gpu_id)+" of "+str(gpu_cnt))
+    C.try_set_default_device(C.gpu(my_gpu_id))
+
     polymath = rnetmodel
     model = C.load_model(os.path.join(model_path, model_file if model_file else model_name))
     begin_logits = model.outputs[0]
@@ -374,7 +414,7 @@ if __name__=='__main__':
     if args['datadir'] is not None:
         data_path = args['datadir']
         
-    C.try_set_default_device(C.gpu(0))
+    # C.try_set_default_device(C.gpu(0))
 
     test_data = args['test']
     test_model = args['model']
