@@ -7,8 +7,8 @@ data_config = {
 }
 
 model_config = {
-    'hidden_dim'     	: 100,
-    'char_convs'     	: 100,
+    'hidden_dim'     	: 76,
+    'char_convs'     	: 50,
     'char_emb_dim'   	: 8,
     'word_emb_dim'      : 100,
     'dropout'        	: 0.2,
@@ -18,18 +18,15 @@ model_config = {
 }
 
 training_config = {
-    'tensorboard_logdir': 'tensorboard-logs', 
-    'minibatch_size'    : 1024,    # in samples when using ctf reader, per worker
-    'epoch_size'        : 8192,   # in sequences, when using ctf reader
+    'minibatch_size'    : 1,    # in samples when using ctf reader, per worker
+    'epoch_size'        : 1000,   # in sequences, when using ctf reader
     'log_freq'          : 500,     # in minibatchs
     'max_epochs'        : 300,
-    'lr'                : 2,
+    'lr'                : 1,
     'train_data'        : 'train.ctf',  # or 'train.tsv'
     'val_data'          : 'dev.ctf',
     'val_interval'      : 1,       # interval in epochs to run validation
     'stop_after'        : 2,       # num epochs to stop if no CV improvement
     'minibatch_seqs'    : 16,      # num sequences of minibatch, when using tsv reader, per worker
     'distributed_after' : 0,       # num sequences after which to start distributed training
-    'gpu_pad'           : 0, #emmmmmmm
-    'gpu_cnt'           : 1, # number of gpus
 }

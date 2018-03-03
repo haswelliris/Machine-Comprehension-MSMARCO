@@ -44,6 +44,7 @@ def load_weight(path):
     w = np.vstack((w, ukvec))
     print('word embedding size: {}'.format(w.shape))
     return w
+
 # =============== factory function ==============
 def create_birnn(runit_forward,runit_backward, name=''):
     with C.layers.default_options(initial_state=0.1):
@@ -54,6 +55,21 @@ def create_birnn(runit_forward,runit_backward, name=''):
         h = C.splice(posRnn(e), negRnn(e), name=name)
         return h
     return BiRnn
+def create_word_embed():
+    # load glove
+    npglove = np.zeros((wg_dim, word_emb_dim), dtype=np.float32)
+    with open(os.path.join(abs_path, 'glove.6B.100d.txt'), encoding='utf-8') as f:
+        for line in f:
+            parts = line.split()
+            word = parts[0].lower()
+            if word in vocab:
+                npglove[vocab[word],:] = np.asarray([float(p) for p in parts[1:]])
+    glove = C.constant(npglove)
+    nonglove = C.parameter(shape=(len(vocab) - wg_dim, word_emb_dim), init=C.glorot_uniform(), name='TrainableE')
+    
+    def func(wg, wn):
+        return C.times(wg, glove) + C.times(wn, nonglove)
+    return func
 def create_attention(attention_dim, name=""):
     # model parameters
     with C.layers.default_options(bias=False): # all the projections have no bias
@@ -136,15 +152,20 @@ def attention_layer(qu, pu, decoder_hidden_state):
 def input_layer(cgw_ph, cnw_ph, cc_ph, qgw_ph, qnw_ph, qc_ph):
     print('input shape word:{} char:{}'.format(cgw_ph, cc_ph))
     # parameter
-    word_embed_layer = C.layers.Embedding(weights=load_weight(data_config['glove_file']), name='word_level_embed')
-    birnn_pu = create_birnn(C.layers.GRU(hidden_dim//2),
-        C.layers.GRU(hidden_dim//2)) 
-    birnn_qu = create_birnn(C.layers.GRU(hidden_dim//2),
-        C.layers.GRU(hidden_dim//2))
+    # word_embed_layer = C.layers.Embedding(weights=load_weight(data_config['glove_file']), name='word_level_embed')
+    word_embed_layer = create_word_embed()
+
+    # birnn_pu = create_birnn(C.layers.GRU(hidden_dim//2),
+    #     C.layers.GRU(hidden_dim//2)) 
+    # birnn_qu = create_birnn(C.layers.GRU(hidden_dim//2),
+    #     C.layers.GRU(hidden_dim//2))
+    birnn_pu = OptimizedRnnStack(hidden_dim//2, 3,'gru',bidirectional=True)
+    birnn_qu = OptimizedRnnStack(hidden_dim//2, 3,'gru',bidirectional=True)
+
     # graph
-    qe = C.splice(word_embed_layer(C.splice(qgw_ph, qnw_ph)), 
+    qe = C.splice(word_embed_layer(qgw_ph, qnw_ph), 
                 charcnn(C.one_hot(qc_ph, char_dim, name="one_hot")))
-    pe = C.splice(word_embed_layer(C.splice(cgw_ph, cnw_ph)), 
+    pe = C.splice(word_embed_layer(cgw_ph, cnw_ph), 
                 charcnn(C.one_hot(cc_ph, char_dim, name="one_hot")))    
     qu = birnn_qu(qe); pu = birnn_pu(pe)
     print('char onehot shape:{}'.format(C.one_hot(qc_ph, char_dim).output))
