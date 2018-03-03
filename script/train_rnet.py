@@ -159,7 +159,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     epoch_stat = {
         'best_val_err' : 100,
         'best_since'   : 0,
-        'val_since'    : 0
+        'val_since'    : 0,
         'record_num'   : 0}
 
     if restore and os.path.isfile(model_file):
