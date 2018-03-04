@@ -265,15 +265,16 @@ def create_rnet():
     c_axis = C.Axis.new_unique_dynamic_axis("context")
     b = C.Axis.default_batch_axis()
     # context 由于某些操作不支持稀疏矩阵，全部采用密集输入
-    cgw = C.sequence.input_variable(wg_dim, sequence_axis=c_axis, name='cgw')
-    cnw = C.sequence.input_variable(wn_dim, sequence_axis=c_axis, name='cnw')
-    cc = C.input_variable(word_size, dynamic_axes = [b,c_axis], name='cc')
+    input_ph = {}
+    cgw = C.sequence.input_variable(wg_dim, sequence_axis=c_axis, name='cgw'); input_ph['cgw']=cgw
+    cnw = C.sequence.input_variable(wn_dim, sequence_axis=c_axis, name='cnw'); input_ph['cnw']=cnw
+    cc = C.input_variable(word_size, dynamic_axes = [b,c_axis], name='cc'); input_ph['cc']=cc
     # query
-    qgw = C.sequence.input_variable(wg_dim, sequence_axis=q_axis, name='qgw')
-    qnw = C.sequence.input_variable(wn_dim, sequence_axis=q_axis, name='qnw')
-    qc = C.input_variable(word_size, dynamic_axes = [b,q_axis], name='qc')
-    ab = C.sequence.input_variable(1, sequence_axis=c_axis, name='ab')
-    ae = C.sequence.input_variable(1, sequence_axis=c_axis, name='ae')
+    qgw = C.sequence.input_variable(wg_dim, sequence_axis=q_axis, name='qgw'); input_ph['qgw']=qgw
+    qnw = C.sequence.input_variable(wn_dim, sequence_axis=q_axis, name='qnw'); input_ph['qnw']=qnw
+    qc = C.input_variable(word_size, dynamic_axes = [b,q_axis], name='qc'); input_ph['qc']=qc
+    ab = C.sequence.input_variable(1, sequence_axis=c_axis, name='ab'); input_ph['ab']=ab
+    ae = C.sequence.input_variable(1, sequence_axis=c_axis, name='ae'); input_ph['ae']=ae
 
     # graph
     qu, pu = input_layer(cgw, cnw, cc, qgw, qnw, qc)
@@ -291,7 +292,8 @@ def create_rnet():
     # new_loss = all_spans_loss(start_pos, ab, end_pos, ae)
     # debug
     new_loss.as_numpy = False
-    return C.combine([start_pos, end_pos]), new_loss
+    
+    return C.combine([start_pos, end_pos]), new_loss, input_ph
 
 # =============== test edition ==================
 from cntk.debugging import debug_model
