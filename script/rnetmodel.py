@@ -283,8 +283,8 @@ def create_rnet():
     # loss
     start_loss = seq_loss(start_pos, ab)
     end_loss = seq_loss(end_pos, ae)
-    #paper_loss = start_loss + end_loss
-    new_loss = all_spans_loss(start_pos, ab, end_pos, ae)
+    new_loss = C.reduce_mean(start_loss + end_loss)
+    # new_loss = all_spans_loss(start_pos, ab, end_pos, ae)
     return C.combine([start_pos, end_pos]), new_loss
 
 # =============== test edition ==================
