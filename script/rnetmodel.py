@@ -289,6 +289,8 @@ def create_rnet():
     end_loss = seq_loss(end_pos, ae)
     new_loss = C.reduce_mean(start_loss + end_loss)
     # new_loss = all_spans_loss(start_pos, ab, end_pos, ae)
+    # debug
+    new_loss.as_numpy = False
     return C.combine([start_pos, end_pos]), new_loss
 
 # =============== test edition ==================
