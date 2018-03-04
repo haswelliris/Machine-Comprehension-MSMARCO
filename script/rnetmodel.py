@@ -228,14 +228,14 @@ def self_match_attention(pv):
     return ph
 def attention_pooling_layer(qu):
     with C.layers.default_options(bias=False):
-        V = C.parameter(hidden_dim)\
+        V = C.parameter(hidden_dim)
         attn_proj_enc = C.layers.Dense(hidden_dim, init=glorot_uniform(), input_rank=1, name='pool_W')
         attn_proj_tanh = C.layers.Dense(1, init=glorot_uniform(), input_rank=1, name="attn_proj_tanh")
     tanh_output = C.tanh(attn_proj_enc(qu)+V)
     proj_tanh_output = attn_proj_tanh(tanh_output)
     attention_weights = C.softmax(proj_tanh_output)
     rq = C.sequence.reduce_sum(attention_weights*qu)
-    print('weight shape:{}'.format(weight))
+    # print('weight shape:{}'.format(weight))
     print('tanh output shape:{}'.format(tanh_output.output))
     print('attention weight shape:{}'.format(attention_weights.output))
     print('rq shape:{}'.format(rq.output))
