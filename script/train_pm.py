@@ -292,7 +292,7 @@ def validate_model(test_data, model, polymath,config_file):
 
     training_config = importlib.import_module(config_file).training_config
     # Evaluation parameters
-    minibatch_size = training_config['minibatch_size']
+    minibatch_size = int(training_config['minibatch_size']/4)
     num_sequences = 0
 
     stat_sum = 0
