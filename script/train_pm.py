@@ -145,7 +145,10 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         dummies.append(C.reduce_sum(C.assign(ema_p, 0.999 * ema_p + 0.001 * p)))
     dummy = C.combine(dummies)
 
-    learner = C.adadelta(z.parameters, lr)
+    # learner = C.adadelta(z.parameters, lr)
+    momentum_as_time_constant = C.momentum_as_time_constant_schedule(700)
+    learner = C.adam(parameters=z.parameters, lr=lr,momentum=momentum_as_time_constant,
+                         gradient_clipping_threshold_per_sample=15)
 
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)
