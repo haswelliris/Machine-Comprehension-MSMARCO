@@ -176,16 +176,17 @@ def gate_attention_recurrence_layer(qu, pu):
     
     # parameter
     r = C.layers.Recurrence(C.layers.RNNStep(hidden_dim))
+    attn = C.layers.AttentionModel(hidden_dim)
     # graph
-    hidden_state_ph = C.layers.ForwardDeclaration(name='hidden_state_ph')
-    attention_context = attention_layer(qu, pu, hidden_state_ph) # 每一个p中的单词，都有相应的attention向量
+    #hidden_state_ph = C.layers.ForwardDeclaration(name='hidden_state_ph')
+    attention_context = attn(qu, pu) # 每一个p中的单词，都有相应的attention向量
     attention_context = C.reconcile_dynamic_axes(attention_context, pu)
     raw_state = C.splice(pu, attention_context)
     gate = C.sigmoid(C.layers.Dense(2*hidden_dim, bias=False, init=glorot_uniform(), input_rank=1)(raw_state))
     rnn_input = C.element_times(gate,raw_state)
     rnn_output = r(rnn_input)
-    prevout=C.sequence.past_value(rnn_output)
-    hidden_state_ph.resolve_to(prevout)
+    #prevout=C.sequence.past_value(rnn_output)
+    #hidden_state_ph.resolve_to(prevout)
     print('gate rnn input shape:{}'.format(rnn_input.output))
     print('gate rnn output shape:{}'.format(rnn_output.output))
     return rnn_output
@@ -219,16 +220,18 @@ def self_match_attention(pv):
     # graph
     attention_context = attention_model(pv, pv)
     attention_context = C.reconcile_dynamic_axes(attention_context, pv)
-    rnn_input = C.splice(pv, attention_context)
+    s_input = C.splice(pv, attention_context)
+    rnn_input = C.sigmoid(C.layers.Dense(2*hidden_dim, bias=False, init=glorot_uniform(), input_rank=1)(s_input))
     ph = birnn_ph(rnn_input)
     print('self match input shape:{}'.format(rnn_input.output))
     print('self match output shape:{}'.format(ph.output))
     return ph
-def attention_pooling_layer(weight, qu):
+def attention_pooling_layer(qu):
     with C.layers.default_options(bias=False):
-        V = C.parameter(hidden_dim)
+        V = C.parameter(hidden_dim)\
+        attn_proj_enc = C.layers.Dense(hidden_dim, init=glorot_uniform(), input_rank=1, name='pool_W')
         attn_proj_tanh = C.layers.Dense(1, init=glorot_uniform(), input_rank=1, name="attn_proj_tanh")
-    tanh_output = C.tanh(C.times(qu, weight)+V)
+    tanh_output = C.tanh(attn_proj_enc(qu)+V)
     proj_tanh_output = attn_proj_tanh(tanh_output)
     attention_weights = C.softmax(proj_tanh_output)
     rq = C.sequence.reduce_sum(attention_weights*qu)
@@ -276,8 +279,9 @@ def create_rnet():
     qu, pu = input_layer(cgw, cnw, cc, qgw, qnw, qc)
     pv = gate_attention_recurrence_layer(qu, pu)
     ph = self_match_attention(pv)
-    Wqu = pv.find_by_name('Wqu').parameters[0]
-    rq = attention_pooling_layer(Wqu, qu)
+    # Wqu = pv.find_by_name('Wqu').parameters[0]
+    # rq = attention_pooling_layer(Wqu, qu)
+    rq = attention_pooling_layer(qu)
     start_pos, end_pos = output_layer(rq, ph)
 
     # loss
