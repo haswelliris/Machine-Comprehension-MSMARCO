@@ -2,6 +2,7 @@ import cntk as C
 import numpy as np
 from polymath import PolyMath
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
+from helpers import print_para_info
 import tsv2ctf
 import os
 import argparse
@@ -96,7 +97,7 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
                         argument_by_name(func, 'ae' ): answer_end }
             else:
                 yield {} # need to generate empty batch for distributed training
-
+from pprint import pprint
 def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
@@ -138,11 +139,13 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     lr = C.learning_parameter_schedule(training_config['lr'], minibatch_size=None, epoch_size=None)
 
     ema = {}
+    dummies_info = {}
     dummies = []
     for p in z.parameters:
         ema_p = C.constant(0, shape=p.shape, dtype=p.dtype, name='ema_%s' % p.uid)
-        ema[p.uid] = ema_p
-        dummies.append(C.reduce_sum(C.assign(ema_p, 0.999 * ema_p + 0.001 * p)))
+        ema[p.uid] = p
+        dummies.append(C.reduce_sum(C.assign(ema_p, p)))
+        dummies_info[dummies[-1].output] = (p.name, p.shape)
     dummy = C.combine(dummies)
 
     learner = C.adadelta(z.parameters, lr)
@@ -230,7 +233,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
 
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
-                dummy.eval()
+                # print_para_info(dummy, dummies_info)
                 if num_seq >= epoch_size:
                     break
             if not post_epoch_work(epoch_stat):
@@ -427,7 +430,7 @@ if __name__=='__main__':
     else:
         try:
             train(data_path, model_path, args['logfile'], args['config'],
-                restore = not args['restart'],
+                restore = args['restart'],
                 profiling = args['profile'],
                 gen_heartbeat = args['genheartbeat'])
         finally:
