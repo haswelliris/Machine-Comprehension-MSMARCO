@@ -96,6 +96,7 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
             else:
                 yield {} # need to generate empty batch for distributed training
 
+import pprint
 def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
     training_config = importlib.import_module(config_file).training_config
     gpu_pad = training_config['gpu_pad']
@@ -218,7 +219,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
 
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
-                dummy.eval()
+                pprint(dummy.eval())
                 if num_seq >= epoch_size:
                     break
             if not post_epoch_work(epoch_stat):
