@@ -138,7 +138,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     dummy = C.combine(dummies)
 
     learner = C.adadelta(z.parameters, lr)
-
+    print(learner.parameters)
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)
 
