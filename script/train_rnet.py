@@ -21,7 +21,7 @@ def argument_by_name(func, name):
     else:
         return found[0]
 
-def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
+def create_mb_and_map(func, data_file, polymath, input_hd, randomize=True, repeat=True):
     mb_source = C.io.MinibatchSource(
         C.io.CTFDeserializer(
             data_file,
@@ -38,14 +38,14 @@ def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
         max_sweeps=C.io.INFINITELY_REPEAT if repeat else 1)
 
     input_map = {
-        argument_by_name(func, 'cgw'): mb_source.streams.context_g_words,
-        argument_by_name(func, 'qgw'): mb_source.streams.query_g_words,
-        argument_by_name(func, 'cnw'): mb_source.streams.context_ng_words,
-        argument_by_name(func, 'qnw'): mb_source.streams.query_ng_words,
-        argument_by_name(func, 'cc' ): mb_source.streams.context_chars,
-        argument_by_name(func, 'qc' ): mb_source.streams.query_chars,
-        argument_by_name(func, 'ab' ): mb_source.streams.answer_begin,
-        argument_by_name(func, 'ae' ): mb_source.streams.answer_end
+        input_hd['cgw']: mb_source.streams.context_g_words,
+        input_hd['qgw']: mb_source.streams.query_g_words,
+        input_hd['cnw']: mb_source.streams.context_ng_words,
+        input_hd['qnw']: mb_source.streams.query_ng_words,
+        input_hd['cc']: mb_source.streams.context_chars,
+        input_hd['qc']: mb_source.streams.query_chars,
+        input_hd['ab']: mb_source.streams.answer_begin,
+        input_hd['ae']: mb_source.streams.answer_end
     }
     return mb_source, input_map
 
@@ -112,7 +112,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         C.try_set_default_device(C.gpu(0))
     
     polymath = rnetmodel
-    z, loss = rnetmodel.create_rnet()
+    z, loss, input_ph = rnetmodel.create_rnet()
     # outputs while training
     normal_log = os.path.join(data_path,training_config['logdir'],log_file)
     # tensorboard files' dir
@@ -219,16 +219,17 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         return True
 
     if train_data_ext == '.ctf':
-        mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath)
-        print('load data end')
-        minibatch_size = training_config['minibatch_size'] # number of samples
-        epoch_size = training_config['epoch_size']
+        #mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath, input_ph)
+        #print('load data end')
+        #minibatch_size = training_config['minibatch_size'] # number of samples
+        #epoch_size = training_config['epoch_size']
         print('start train')
-        # model,loss = rnetmodel.create_rnet()
-        # mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath)
-        # data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
+        model,loss = rnetmodel.create_rnet()
+        mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath)
+        data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
 
-        # res = model.eval(data);return
+        res = model.eval(data);print(res);return
+        '''
         for epoch in range(max_epochs):
             num_seq = 0
             print('load data end')
@@ -262,7 +263,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                 minibatch_count += 1
             if not post_epoch_work(epoch_stat):
                 break
-
+'''
     if profiling:
         C.debugging.stop_profiler()
 
