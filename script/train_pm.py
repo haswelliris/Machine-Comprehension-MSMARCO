@@ -143,7 +143,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     dummies = []
     for p in z.parameters:
         ema_p = C.constant(0, shape=p.shape, dtype=p.dtype, name='ema_%s' % p.uid)
-        ema[p.uid] = p
+        ema[p.uid] = ema_p 
         dummies.append(C.reduce_sum(C.assign(ema_p, p)))
         dummies_info[dummies[-1].output] = (p.name, p.shape)
     dummy = C.combine(dummies)
