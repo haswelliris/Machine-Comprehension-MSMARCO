@@ -98,6 +98,7 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
                 yield {} # need to generate empty batch for distributed training
 
 import rnetmodel
+from pprint import pprint
 def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
@@ -143,7 +144,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     for p in z.parameters:
         ema_p = C.constant(0, shape=p.shape, dtype=p.dtype, name='ema_%s' % p.uid)
         ema[p.uid] = ema_p
-        dummies.append(C.reduce_sum(C.assign(ema_p, 0.999 * ema_p + 0.001 * p)))
+        dummies.append(C.reduce_sum(C.assign(ema_p, p)))
     dummy = C.combine(dummies)
 
     learner = C.adadelta(z.parameters, lr, rho=0.95, epsilon=1e-6)
@@ -174,7 +175,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     if restore and os.path.isfile(model_file):
         trainer.restore_from_checkpoint(model_file)
         #after restore always re-evaluate
-        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
+        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), model, input_ph, polymath,config_file)
 
     def post_epoch_work(epoch_stat):
         trainer.summarize_training_progress()
@@ -219,20 +220,19 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         return True
 
     if train_data_ext == '.ctf':
-        #mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath, input_ph)
-        #print('load data end')
-        #minibatch_size = training_config['minibatch_size'] # number of samples
-        #epoch_size = training_config['epoch_size']
+        mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath, input_ph)
+        print('load data end')
+        minibatch_size = training_config['minibatch_size'] # number of samples
+        epoch_size = training_config['epoch_size']
         print('start train')
-        model,loss = rnetmodel.create_rnet()
-        mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath)
-        data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
-
-        res = model.eval(data);print(res);return
-        '''
+        # model,loss,input_ph = rnetmodel.create_rnet()
+        # mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath, input_ph)
+        # data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
+        # print(data)
+        # res = loss.eval(data);print('{}, shape:{}'.format(res,res.shape));return
+        
         for epoch in range(max_epochs):
             num_seq = 0
-            print('load data end')
             while True:
                 if trainer.total_number_of_samples_seen >= training_config['distributed_after']:
                     data = mb_source.next_minibatch(minibatch_size*C.Communicator.num_workers(), input_map=input_map, num_data_partitions=C.Communicator.num_workers(), partition_index=C.Communicator.rank())
@@ -241,7 +241,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                 # print(data)
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
-                dummy.eval()
+                pprint(dummy.eval())
                 if num_seq >= epoch_size:
                     break
             if not post_epoch_work(epoch_stat):
@@ -263,7 +263,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                 minibatch_count += 1
             if not post_epoch_work(epoch_stat):
                 break
-'''
+
     if profiling:
         C.debugging.stop_profiler()
 
@@ -271,13 +271,13 @@ def symbolic_best_span(begin, end):
     running_max_begin = C.layers.Recurrence(C.element_max, initial_state=-float("inf"))(begin)
     return C.layers.Fold(C.element_max, initial_state=C.constant(-1e+30))(running_max_begin + end)
 
-def validate_model(test_data, model, polymath, config_file):
+def validate_model(test_data, model, input_ph,polymath, config_file):
     print("start validate")
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
     loss         = model.outputs[2]
     root = C.as_composite(loss.owner)
-    mb_source, input_map = create_mb_and_map(root, test_data, polymath, randomize=False, repeat=False)
+    mb_source, input_map = create_mb_and_map(root, test_data, polymath, input_ph,randomize=False, repeat=False)
     begin_label = argument_by_name(root, 'ab')
     end_label   = argument_by_name(root, 'ae')
 
@@ -419,7 +419,7 @@ if __name__=='__main__':
     parser.add_argument('-profile', '--profile', help="Turn on profiling", action='store_true', default=False)
     parser.add_argument('-genheartbeat', '--genheartbeat', help="Turn on heart-beat for philly", action='store_true', default=False)
     parser.add_argument('-config', '--config', help='Config file', required=False, default='config')
-    parser.add_argument('-r', '--restart', help='Indicating whether to restart from scratch (instead of restart from checkpoint file by default)', action='store_true')
+    parser.add_argument('-r', '--restart', help='Indicating whether to restart from scratch (instead of restart from checkpoint file by default)', action='store_true', default=False)
     parser.add_argument('-test', '--test', help='Test data file', required=False, default=None)
     parser.add_argument('-model', '--model', help='Model file name', required=False, default=model_name)
 
@@ -439,7 +439,7 @@ if __name__=='__main__':
     else:
         try:
             train(data_path, model_path, args['logfile'], args['config'],
-                restore = not args['restart'],
+                restore = args['restart'],
                 profiling = args['profile'],
                 gen_heartbeat = args['genheartbeat'])
         finally:
