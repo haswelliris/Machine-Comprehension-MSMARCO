@@ -21,10 +21,10 @@ train.ctf
 进入script文件夹，执行命令
 ```
 # 单卡训练
-python train_pm.py --logdir ./logs/
+python train_pm.py --logfile log1
 
 # 多卡训练 请把4改成显卡数量
- mpirun -npernode 4 python train_pm.py --logdir ./logs/
+ mpirun -npernode 4 python train_pm.py --logfile log1
 ```
 ### 测试
 使用训练好的模型求解dev数据集
