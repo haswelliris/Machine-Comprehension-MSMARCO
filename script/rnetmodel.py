@@ -97,7 +97,8 @@ def create_attention(attention_dim, name=""):
         minus_inf = C.constant(-1e+30)
         masked_attention_logits = C.element_select(broadcast_valid_mask, attention_logits, minus_inf)
         # masked_attention_logits = [#, d] [*=e]
-        attention_weights = C.softmax(masked_attention_logits, axis=0)
+        # attention_weights = C.softmax(masked_attention_logits, axis=0)
+        attention_weights = masked_attention_logits/C.sequence.reduce_sum(masked_attention_logits)
         attention_weights = C.layers.Label('attention_weights')(attention_weights)
         # attention_weights = [#, d] [*=e]
         attended_encoder_hidden_state = C.reduce_sum(attention_weights * C.sequence.broadcast_as(unpacked_encoder_hidden_state, attention_weights), axis=0)
@@ -239,7 +240,8 @@ def attention_pooling_layer(qu):
         attn_proj_tanh = C.layers.Dense(1, init=glorot_uniform(), input_rank=1, name="attn_proj_tanh")
     tanh_output = C.tanh(attn_proj_enc(qu)+V)
     proj_tanh_output = attn_proj_tanh(tanh_output)
-    attention_weights = C.softmax(proj_tanh_output)
+    # attention_weights = C.softmax(proj_tanh_output)
+    attention_weights = proj_tanh_output/C.sequence.reduce_sum(proj_tanh_output)
     rq = C.sequence.reduce_sum(attention_weights*qu)
     # print('weight shape:{}'.format(weight))
     print('tanh output shape:{}'.format(tanh_output.output))
