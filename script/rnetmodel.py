@@ -154,6 +154,9 @@ def input_layer(cgw_ph, cnw_ph, cc_ph, qgw_ph, qnw_ph, qc_ph):
     # parameter
     # word_embed_layer = C.layers.Embedding(weights=load_weight(data_config['glove_file']), name='word_level_embed')
     word_embed_layer = create_word_embed()
+    highway = HighwayNetwork(dim= word_emb_dim + convs, highway_layers=2)
+    highway_drop = C.layers.Dropout(0.2)
+
 
     # birnn_pu = create_birnn(C.layers.GRU(hidden_dim//2),
     #     C.layers.GRU(hidden_dim//2)) 
@@ -167,6 +170,8 @@ def input_layer(cgw_ph, cnw_ph, cc_ph, qgw_ph, qnw_ph, qc_ph):
                 charcnn(C.one_hot(qc_ph, char_dim, name="one_hot")))
     pe = C.splice(word_embed_layer(cgw_ph, cnw_ph), 
                 charcnn(C.one_hot(cc_ph, char_dim, name="one_hot")))    
+    pe = highway_drop(highway(pe))
+    qe = highway_drop(highway(qe))
     qu = birnn_qu(qe); pu = birnn_pu(pe)
     print('char onehot shape:{}'.format(C.one_hot(qc_ph, char_dim).output))
     print("embed output shape:qe:{} \npe:{}".format(qe.output ,pe.output))
@@ -175,8 +180,8 @@ def input_layer(cgw_ph, cnw_ph, cc_ph, qgw_ph, qnw_ph, qc_ph):
 def gate_attention_recurrence_layer(qu, pu):
     
     # parameter
-    r = C.layers.Recurrence(C.layers.RNNStep(hidden_dim))
-    attn = C.layers.AttentionModel(hidden_dim)
+    r = C.layers.Recurrence(C.layers.GRU(hidden_dim))
+    attn = create_attention(hidden_dim)
     # graph
     #hidden_state_ph = C.layers.ForwardDeclaration(name='hidden_state_ph')
     attention_context = attn(qu, pu) # 每一个p中的单词，都有相应的attention向量
@@ -213,9 +218,9 @@ def gate_attention_recurrence_layer(qu, pu):
     # return pv
 def self_match_attention(pv):
     # parameter
-    attention_model = C.layers.AttentionModel(hidden_dim)
+    attention_model = create_attention(hidden_dim)
     with C.layers.default_options(enable_self_stabilization=True):
-        birnn_ph = create_birnn(C.layers.RNNStep(hidden_dim//2), C.layers.RNNStep(hidden_dim//2))
+        birnn_ph = create_birnn(C.layers.GRU(hidden_dim//2), C.layers.GRU(hidden_dim//2))
 
     # graph
     attention_context = attention_model(pv, pv)
@@ -242,8 +247,8 @@ def attention_pooling_layer(qu):
     return rq
 def output_layer(init_state, input_state):
     # parameter
-    r = C.layers.RNNStep(hidden_dim)
-    attention_model=C.layers.AttentionModel(hidden_dim)
+    r = C.layers.GRU(hidden_dim)
+    attention_model=create_attention(hidden_dim)
     # graph
     attention_context = attention_model(input_state, init_state)
     h1 = r(init_state, attention_context)
@@ -278,8 +283,11 @@ def create_rnet():
 
     # graph
     qu, pu = input_layer(cgw, cnw, cc, qgw, qnw, qc)
-    pv = gate_attention_recurrence_layer(qu, pu)
-    ph = self_match_attention(pv)
+    pv_plus = gate_attention_recurrence_layer(qu, pu)
+    pv = C.plus(pu, pv_plus) # residual
+
+    ph_plus = self_match_attention(pv)
+    ph = C.plus(pv, ph_plus) # residual
     # Wqu = pv.find_by_name('Wqu').parameters[0]
     # rq = attention_pooling_layer(Wqu, qu)
     rq = attention_pooling_layer(qu)

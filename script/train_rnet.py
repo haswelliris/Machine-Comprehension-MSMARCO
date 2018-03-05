@@ -1,6 +1,6 @@
 import cntk as C
 import numpy as np
-#from polymath import PolyMath
+from helpers import print_para_info
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 import tsv2ctf
 import os
@@ -99,6 +99,9 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
 
 import rnetmodel
 from pprint import pprint
+from cntk.debugging.debug import set_checked_mode, set_computation_network_trace_level
+set_checked_mode(False)
+set_computation_network_trace_level(0)
 def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
@@ -139,12 +142,15 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
 
     lr = C.learning_parameter_schedule(training_config['lr'], minibatch_size=None, epoch_size=None)
 
+    # the computation graph to get the latest parameters
     ema = {}
+    dummies_info = {}
     dummies = []
     for p in z.parameters:
         ema_p = C.constant(0, shape=p.shape, dtype=p.dtype, name='ema_%s' % p.uid)
         ema[p.uid] = ema_p
         dummies.append(C.reduce_sum(C.assign(ema_p, p)))
+        dummies_info[dummies[-1].output]=(p.name, p.shape)
     dummy = C.combine(dummies)
 
     learner = C.adadelta(z.parameters, lr, rho=0.95, epsilon=1e-6)
@@ -183,10 +189,10 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
 
         if epoch_stat['val_since'] == training_config['val_interval']:
             epoch_stat['val_since'] = 0
-            temp = dict((p.uid, p.value) for p in z.parameters)
-            for p in trainer.model.parameters:
+            temp = dict((p.uid, p.value) for p in z.parameters) # z is the model we create by create_model()
+            for p in trainer.model.parameters: # use ema replace the original value ema_p
                 p.value = ema[p.uid].value
-            # val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
+            val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, input_ph, polymath,config_file)
             val_err = epoch_stat['best_val_err']-0.1
             if epoch_stat['best_val_err'] > val_err:
                 epoch_stat['best_val_err'] = val_err
@@ -227,21 +233,22 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         print('start train')
         # model,loss,input_ph = rnetmodel.create_rnet()
         # mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath, input_ph)
-        # data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
+        data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
         # print(data)
         # res = loss.eval(data);print('{}, shape:{}'.format(res,res.shape));return
         
         for epoch in range(max_epochs):
             num_seq = 0
             while True:
-                if trainer.total_number_of_samples_seen >= training_config['distributed_after']:
-                    data = mb_source.next_minibatch(minibatch_size*C.Communicator.num_workers(), input_map=input_map, num_data_partitions=C.Communicator.num_workers(), partition_index=C.Communicator.rank())
-                else:
-                    data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
+                #if trainer.total_number_of_samples_seen >= training_config['distributed_after']:
+                #    data = mb_source.next_minibatch(minibatch_size*C.Communicator.num_workers(), input_map=input_map, num_data_partitions=C.Communicator.num_workers(), partition_index=C.Communicator.rank())
+                #else:
+                #    data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
                 # print(data)
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
-                pprint(dummy.eval())
+                dummy.eval() # must be executed
+                # print_para_info(dummy, dummies_info)
                 if num_seq >= epoch_size:
                     break
             if not post_epoch_work(epoch_stat):
@@ -321,6 +328,8 @@ def validate_model(test_data, model, input_ph,polymath, config_file):
         stat_sum += stats.eval((other_input_map))
         loss_sum += np.sum(testloss.asarray())
         num_sequences += data[begin_label].num_sequences
+        #debug tag
+        break
 
     stat_avg = stat_sum / num_sequences
     loss_avg = loss_sum / num_sequences

@@ -2,6 +2,16 @@ import numpy as np
 import cntk as C
 from cntk.layers.blocks import _INFERRED
 
+from pprint import pprint
+def print_para_info(dummy, ema):
+    '''
+    @dummy: the ops combines parameters
+    @ema: a dict  ops:(uid, shape)
+    '''
+    res = dummy.eval()
+    for k,v in ema.items():
+        pprint('{}:{}'.format(res[k], v))
+    print("===================")
 def OptimizedRnnStack(hidden_dim, num_layers=1, recurrent_op='gru', bidirectional=False, use_cudnn=True, name=''):
     if use_cudnn:
         W = C.parameter(_INFERRED + (hidden_dim,), init=C.glorot_uniform())
