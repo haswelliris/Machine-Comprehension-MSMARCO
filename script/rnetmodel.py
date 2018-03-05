@@ -223,7 +223,8 @@ def self_match_attention(pv):
         birnn_ph = create_birnn(C.layers.GRU(hidden_dim//2), C.layers.GRU(hidden_dim//2))
 
     # graph
-    attention_context = attention_model(pv, pv)
+    pv2 = C.sequence.past_value(pv, time_step=0)
+    attention_context = attention_model(pv, pv2)
     attention_context = C.reconcile_dynamic_axes(attention_context, pv)
     s_input = C.splice(pv, attention_context)
     rnn_input = C.sigmoid(C.layers.Dense(2*hidden_dim, bias=False, init=glorot_uniform(), input_rank=1)(s_input))
@@ -294,10 +295,10 @@ def create_rnet():
     start_pos, end_pos = output_layer(rq, ph)
 
     # loss
-    start_loss = seq_loss(start_pos, ab)
-    end_loss = seq_loss(end_pos, ae)
-    new_loss = C.reduce_mean(start_loss + end_loss)
-    # new_loss = all_spans_loss(start_pos, ab, end_pos, ae)
+    # start_loss = seq_loss(start_pos, ab)
+    # end_loss = seq_loss(end_pos, ae)
+    # new_loss = C.reduce_mean(start_loss + end_loss)
+    new_loss = all_spans_loss(start_pos, ab, end_pos, ae)
     # debug
     new_loss.as_numpy = False
     return C.combine([start_pos, end_pos]), new_loss, input_ph

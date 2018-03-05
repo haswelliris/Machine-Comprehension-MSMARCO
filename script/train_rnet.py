@@ -140,7 +140,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                              model = z)
     progress_writers.append(tensorboard_writer)
 
-    lr = C.learning_parameter_schedule(training_config['lr'], minibatch_size=None, epoch_size=None)
+    lr = C.learning_parameter_schedule(training_config['lr'], minibatch_size=1024, epoch_size=None)
 
     # the computation graph to get the latest parameters
     ema = {}
@@ -189,9 +189,9 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
 
         if epoch_stat['val_since'] == training_config['val_interval']:
             epoch_stat['val_since'] = 0
-            temp = dict((p.uid, p.value) for p in z.parameters) # z is the model we create by create_model()
-            for p in trainer.model.parameters: # use ema replace the original value ema_p
-                p.value = ema[p.uid].value
+            # temp = dict((p.uid, p.value) for p in z.parameters) # z is the model we create by create_model()
+            # for p in trainer.model.parameters: # use ema replace the original value ema_p
+            #     p.value = ema[p.uid].value
             val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, input_ph, polymath,config_file)
             val_err = epoch_stat['best_val_err']-0.1
             if epoch_stat['best_val_err'] > val_err:
@@ -213,8 +213,8 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                         save_flag = False
                     except:
                         fail_cnt = fail_cnt + 1
-                for p in trainer.model.parameters:
-                    p.value = temp[p.uid]
+                # for p in trainer.model.parameters:
+                #     p.value = temp[p.uid]
             else:
                 epoch_stat['best_since'] += 1
                 if epoch_stat['best_since'] > training_config['stop_after']:
@@ -248,7 +248,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
                 dummy.eval() # must be executed
-                # print_para_info(dummy, dummies_info)
+                print_para_info(dummy, dummies_info)
                 if num_seq >= epoch_size:
                     break
             if not post_epoch_work(epoch_stat):
