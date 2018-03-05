@@ -286,13 +286,13 @@ def create_rnet():
     pv_plus = gate_attention_recurrence_layer(qu, pu)
     pv = C.plus(pu, pv_plus) # residual
 
-    ph_plus = self_match_attention(pv)
-    ph = C.plus(pv, ph_plus) # residual
+     # ph_plus = self_match_attention(pv)
+     #ph = C.plus(pv, ph_plus) # residual
     # Wqu = pv.find_by_name('Wqu').parameters[0]
     # rq = attention_pooling_layer(Wqu, qu)
     rq = attention_pooling_layer(qu)
-    start_pos, end_pos = output_layer(rq, ph)
-
+     #start_pos, end_pos = output_layer(rq, ph)
+    start_pos, end_pos = output_layer(rq, pv)
     # loss
     start_loss = seq_loss(start_pos, ab)
     end_loss = seq_loss(end_pos, ae)
@@ -322,7 +322,7 @@ def test_model_part():
     # graph
     qu, pu = input_layer(cgw, cnw, cc, qgw, qnw, qc)
     pv = gate_attention_recurrence_layer(qu, pu)
-    ph = self_match_attention(pv)
+     #ph = self_match_attention(pv)
     Wqu = pv.find_by_name('Wqu').parameters[0]
     rq = attention_pooling_layer(Wqu, qu)
     return C.combine(rq,ab,ae) 
