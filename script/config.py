@@ -7,8 +7,8 @@ data_config = {
 }
 
 model_config = {
-    'hidden_dim'     	: 76,
-    'char_convs'     	: 50,
+    'hidden_dim'     	: 100,
+    'char_convs'     	: 100,
     'char_emb_dim'   	: 8,
     'word_emb_dim'      : 100,
     'dropout'        	: 0.2,
