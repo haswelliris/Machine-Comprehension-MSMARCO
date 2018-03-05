@@ -91,13 +91,13 @@ class LambdaFunc(C.ops.functions.UserFunction):
     def infer_outputs(self):
         return [C.output_variable(self.inputs[0].shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes)]
 
-    def forward(self, argument, device=None, outputs_to_retain=None):
+    def forward(self, argument, device=None, outputs_to_retain=None,as_numpy=False):
         if self.when(argument):
             self.execute(argument)
 
         return None, argument
 
-    def backward(self, state, root_gradients):
+    def backward(self, state, root_gradients,as_numpy=False):
         return root_gradients
         
     def clone(self, cloned_inputs):
