@@ -108,28 +108,38 @@ class PolyMath:
         # so W * [h; u; h.* u] becomes w1 * h + w2 * u + w3 * (h.*u)
         ws1 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
         ws2 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
-        ws3 = C.parameter(shape=(1, 2 * self.hidden_dim), init=C.glorot_uniform())
+        # ws3 = C.parameter(shape=(1, 2 * self.hidden_dim), init=C.glorot_uniform())
+        ws3 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
         att_bias = C.parameter(shape=(), init=0)
 
-        wh = C.times (c_processed, ws1)
-        wu = C.reshape(C.times (qvw, ws2), (-1,))
-        whu = C.reshape(C.reduce_sum(c_processed * C.sequence.broadcast_as(qvw * ws3, c_processed), axis=1), (-1,))
-        S = wh + whu + C.sequence.broadcast_as(wu, c_processed) + att_bias
+        wh = C.times (c_processed, ws1) # [#,c][1]
+        wu = C.reshape(C.times (qvw, ws2), (-1,)) # [#][*]
+        # qvw*ws3: [#][*,200], whu:[#,c][*]
+        # whu = C.reshape(C.reduce_sum(c_processed * C.sequence.broadcast_as(qvw * ws3, c_processed), axis=1), (-1,))
+        S1 = wh + C.sequence.broadcast_as(wu, c_processed) + att_bias # [#,c][*]
         # mask out values outside of Query, and fill in gaps with -1e+30 as neutral value for both reduce_log_sum_exp and reduce_max
         qvw_mask_expanded = C.sequence.broadcast_as(qvw_mask, c_processed)
-        S = C.element_select(qvw_mask_expanded, S, C.constant(-1e+30))
-        q_attn = C.reshape(C.softmax(S), (-1,1))
+        S1 = C.element_select(qvw_mask_expanded, S1, C.constant(-1e+30))
+        q_attn = C.reshape(C.softmax(S1), (-1,1)) # [#,c][*,1]
         #q_attn = print_node(q_attn)
-        c2q = C.reshape(C.reduce_sum(C.sequence.broadcast_as(qvw, q_attn) * q_attn, axis=0),(-1))
+        c2q = C.reshape(C.reduce_sum(C.sequence.broadcast_as(qvw, q_attn) * q_attn, axis=0),(-1)) # [#,c][200]
         
-        max_col = C.reduce_max(S)
-        c_attn = C.sequence.softmax(max_col)
+        max_col = C.reduce_max(S1) # [#,c][1] 最大的q中的单词
+        c_attn = C.sequence.softmax(max_col) # [#,c][1] 对c中的每一个单词做softmax
 
-        htilde = C.sequence.reduce_sum(c_processed * c_attn)
-        q2c = C.sequence.broadcast_as(htilde, c_processed)
+        htilde = C.sequence.reduce_sum(c_processed * c_attn) # [#][200]
+        q2c = C.sequence.broadcast_as(htilde, c_processed) # [#,c][200]
         q2c_out = c_processed * q2c
 
-        att_context = C.splice(c_processed, c2q, c_processed * c2q, q2c_out)
+        hvw, hvw_mask = C.sequence.unpack(c_processed, padding_value=0).outputs
+        whh = C.reshape(C.times(c_processed, ws3),(-1,)) # [#][*,1]
+        S2 = wh + C.sequence.broadcast_as(whh, c_processed) + att_bias
+        hvw_mask_expanded = C.sequence.broadcast_as(hvw_mask, c_processed)
+        S2 = C.element_select(hvw_mask_expanded, S2, C.constant(-1e+30))
+        hh_attn = C.reshape(C.softmax(S2), (-1,1))
+        c2c = C.reshape(C.reduce_sum(C.sequence.broadcast_as(hvw, hh_attn)*hh_attn, axis=0), (-1,))
+
+        att_context = C.splice(c_processed, c2q, q2c_out, c2c)
 
         return C.as_block(
             att_context,
