@@ -248,7 +248,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
                 dummy.eval() # must be executed
-                print_para_info(dummy, dummies_info)
+                #print_para_info(dummy, dummies_info)
                 if num_seq >= epoch_size:
                     break
             if not post_epoch_work(epoch_stat):
