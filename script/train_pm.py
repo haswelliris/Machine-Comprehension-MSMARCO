@@ -172,7 +172,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     if restore and os.path.isfile(model_file):
         trainer.restore_from_checkpoint(model_file)
         #after restore always re-evaluate
-        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath)
+        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
 
     def post_epoch_work(epoch_stat):
         trainer.summarize_training_progress()
@@ -183,7 +183,8 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
             temp = dict((p.uid, p.value) for p in z.parameters)
             for p in trainer.model.parameters:
                 p.value = ema[p.uid].value
-            val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath)
+            #val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
+            val_err = epoch_stat['best_val_err']-0.1
             if epoch_stat['best_val_err'] > val_err:
                 epoch_stat['best_val_err'] = val_err
                 epoch_stat['best_since'] = 0
@@ -231,7 +232,8 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
 
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
-                pprint(dummy.eval())
+                #pprint(dummy.eval())
+                dummy.eval()
                 if num_seq >= epoch_size:
                     break
             if not post_epoch_work(epoch_stat):
@@ -290,8 +292,9 @@ def validate_model(test_data, model, polymath,config_file):
     s = lambda x: C.reduce_sum(x, axis=C.Axis.all_axes())
     stats = C.splice(s(f1), s(exact_match), s(precision), s(recall), s(overlap), s(begin_match), s(end_match))
 
+    training_config = importlib.import_module(config_file).training_config
     # Evaluation parameters
-    minibatch_size = int(training_config['minibatch_size']/4)
+    minibatch_size = int(training_config['minibatch_size']/6)
     num_sequences = 0
 
     stat_sum = 0
