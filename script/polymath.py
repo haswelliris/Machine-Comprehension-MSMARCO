@@ -207,7 +207,7 @@ class PolyMath:
         mod_context = self.modeling_layer(att_context)
         q_int_extend = C.sequence.broadcast_as(q_int, c_processed) # [#,c][2*hidden_dim]
         W_match = C.parameter(shape=(2*self.hidden_dim,2*self.hidden_dim), init=C.glorot_uniform())
-        match_level = C.sigmoid(C.times_transpose(C.times(W_match, mod_context),q_int_extend)) #[#,c][1]
+        match_level = C.sigmoid(C.reduce_sum(C.times_transpose(W_match, mod_context)*q_int_extend)) #[#,c][1]
         mod_context = mod_context * match_level
 
         # output layer
