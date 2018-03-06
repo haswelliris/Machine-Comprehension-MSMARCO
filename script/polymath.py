@@ -100,6 +100,11 @@ class PolyMath:
         #convert query's sequence axis to static
         qvw, qvw_mask = C.sequence.unpack(q_processed, padding_value=0).outputs
 
+        # This part deserves some explanation
+        # It is the attention layer
+        # In the paper they use a 6 * dim dimensional vector
+        # here we split it in three parts because the different parts
+        # participate in very different operations
         # so W * [h; u; h.* u] becomes w1 * h + w2 * u + w3 * (h.*u)
         ws1 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
         ws2 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
@@ -112,9 +117,11 @@ class PolyMath:
         # qvw*ws3: [#][*,200], whu:[#,c][*]
         # whu = C.reshape(C.reduce_sum(c_processed * C.sequence.broadcast_as(qvw * ws3, c_processed), axis=1), (-1,))
         S1 = wh + C.sequence.broadcast_as(wu, c_processed) + att_bias # [#,c][*]
+        # mask out values outside of Query, and fill in gaps with -1e+30 as neutral value for both reduce_log_sum_exp and reduce_max
         qvw_mask_expanded = C.sequence.broadcast_as(qvw_mask, c_processed)
         S1 = C.element_select(qvw_mask_expanded, S1, C.constant(-1e+30))
         q_attn = C.reshape(C.softmax(S1), (-1,1)) # [#,c][*,1]
+        #q_attn = print_node(q_attn)
         c2q = C.reshape(C.reduce_sum(C.sequence.broadcast_as(qvw, q_attn) * q_attn, axis=0),(-1)) # [#,c][200]
         
         max_col = C.reduce_max(S1) # [#,c][1] 最大的q中的单词
@@ -132,7 +139,6 @@ class PolyMath:
         hh_attn = C.reshape(C.softmax(S2), (-1,1))
         c2c = C.reshape(C.reduce_sum(C.sequence.broadcast_as(hvw, hh_attn)*hh_attn, axis=0), (-1,))
 
-        # 原始文档，题目表示，对问题单词文章表示，文章上下文表示
         att_context = C.splice(c_processed, c2q, q2c_out, c2c)
 
         return C.as_block(
@@ -142,9 +148,6 @@ class PolyMath:
             'attention_layer')
             
     def modeling_layer(self, attention_context):
-        '''
-        在第一遍阅读后，对文章的整体表示
-        '''
         att_context = C.placeholder(shape=(8*self.hidden_dim,))
         #modeling layer
         # todo: use dropout in optimized_rnn_stack from cudnn once API exposes it
@@ -164,11 +167,9 @@ class PolyMath:
         att_context = C.placeholder(shape=(8*self.hidden_dim,))
         mod_context = C.placeholder(shape=(2*self.hidden_dim,))
         #output layer
-        # 映射 [#,c][1]
         start_logits = C.layers.Dense(1, name='out_start')(C.dropout(C.splice(mod_context, att_context), self.dropout))
         if self.two_step:
             start_hardmax = seq_hardmax(start_logits)
-            # 得到最大单词的语义表示 [#][dim]
             att_mod_ctx = C.sequence.last(C.sequence.gather(mod_context, start_hardmax))
         else:
             start_prob = C.softmax(start_logits)
@@ -199,16 +200,12 @@ class PolyMath:
 
         #input layer
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
-        q_int = C.sequence.last(q_processed) # [#][2*hidden_dim]
-        # attention layer output:[#,c][8*hidden_dim]
+        
+        # attention layer
         att_context = self.attention_layer(c_processed, q_processed)
 
-        # modeling layer output:[#,c][2*hidden_dim]
+        # modeling layer
         mod_context = self.modeling_layer(att_context)
-        q_int_extend = C.sequence.broadcast_as(q_int, c_processed) # [#,c][2*hidden_dim]
-        W_match = C.parameter(shape=(2*self.hidden_dim,2*self.hidden_dim), init=C.glorot_uniform())
-        match_level = C.sigmoid(C.reduce_sum(C.times_transpose(W_match, mod_context)*q_int_extend)) #[#,c][1]
-        mod_context = mod_context * match_level
 
         # output layer
         start_logits, end_logits = self.output_layer(att_context, mod_context).outputs
@@ -218,7 +215,4 @@ class PolyMath:
         end_loss = seq_loss(end_logits, ae)
         #paper_loss = start_loss + end_loss
         new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
-        new_loss.as_numpy = False
-        res = C.combine([start_logits, end_logits])
-        res.as_numpy=False
-        return res, new_loss
+        return C.combine([start_logits, end_logits]), new_loss

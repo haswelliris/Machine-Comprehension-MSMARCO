@@ -146,7 +146,10 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         dummies.append(C.reduce_sum(C.assign(ema_p, 0.999 * ema_p + 0.001 * p)))
     dummy = C.combine(dummies)
 
-    learner = C.adadelta(z.parameters, lr)
+    # learner = C.adadelta(z.parameters, lr)    
+    momentum_as_time_constant = C.momentum_as_time_constant_schedule(700)
+    learner = C.adam(parameters=z.parameters, lr=lr,momentum=momentum_as_time_constant,
+                         gradient_clipping_threshold_per_sample=30)
 
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)
@@ -172,7 +175,8 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     if restore and os.path.isfile(model_file):
         trainer.restore_from_checkpoint(model_file)
         #after restore always re-evaluate
-        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
+        # epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
+        epoch_stat['best_val_err'] = 100
 
     def post_epoch_work(epoch_stat):
         trainer.summarize_training_progress()
@@ -193,7 +197,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                 save_flag = True
                 fail_cnt = 0
                 while save_flag:
-                    if fail_cnt > 100:
+                    if fail_cnt > 1000:
                         print("ERROR: failed to save models")
                         break
                     try:
@@ -372,7 +376,7 @@ def test(test_data, model_path, model_file, config_file):
     best_span_score = symbolic_best_span(begin_prediction, end_prediction)
     predicted_span = C.layers.Recurrence(C.plus)(begin_prediction - C.sequence.past_value(end_prediction))
 
-    batch_size = 32 # in sequences
+    batch_size = 4 # in sequences
     misc = {'rawctx':[], 'ctoken':[], 'answer':[], 'uid':[]}
     tsv_reader = create_tsv_reader(loss, test_data, polymath, batch_size, 1, is_test=True, misc=misc)
     results = {}

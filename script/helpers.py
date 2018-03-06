@@ -72,13 +72,9 @@ def all_spans_loss(start_logits, start_y, end_logits, end_y):
     return logZ - C.sequence.last(C.sequence.gather(start_logits, start_y)) - C.sequence.last(C.sequence.gather(end_logits, end_y))
 
 def seq_hardmax(logits):
-    # [#][dim=1]
     seq_max = C.layers.Fold(C.element_max, initial_state=C.constant(-1e+30, logits.shape))(logits)
-    # [#,c][dim] 找到最大单词的位置
     s = C.equal(logits, C.sequence.broadcast_as(seq_max, logits))
-    # [#,c][dim] 找到第一个出现的最大单词的位置
     s_acc = C.layers.Recurrence(C.plus)(s)
-    # 除了最大单词为其logits外，其他都为0
     return s * C.equal(s_acc, 1) # only pick the first one
 
 class LambdaFunc(C.ops.functions.UserFunction):
