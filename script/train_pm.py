@@ -33,7 +33,8 @@ def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
                 answer_begin     = C.io.StreamDef('ab',  shape=polymath.a_dim,      is_sparse=False),
                 answer_end       = C.io.StreamDef('ae',  shape=polymath.a_dim,      is_sparse=False),
                 context_chars    = C.io.StreamDef('cc',  shape=polymath.word_size,  is_sparse=False),
-                query_chars      = C.io.StreamDef('qc',  shape=polymath.word_size,  is_sparse=False))),
+                query_chars      = C.io.StreamDef('qc',  shape=polymath.word_size,  is_sparse=False),
+                is_selected = C.io.StreamDef('sl', shape=1, is_sparse=False))),
         randomize=randomize,
         max_sweeps=C.io.INFINITELY_REPEAT if repeat else 1)
 
@@ -45,10 +46,10 @@ def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
         argument_by_name(func, 'cc' ): mb_source.streams.context_chars,
         argument_by_name(func, 'qc' ): mb_source.streams.query_chars,
         argument_by_name(func, 'ab' ): mb_source.streams.answer_begin,
-        argument_by_name(func, 'ae' ): mb_source.streams.answer_end
+        argument_by_name(func, 'ae' ): mb_source.streams.answer_end,
+        argument_by_name(func, 'select': mb_source.streams.is_selected)
     }
     return mb_source, input_map
-
 def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False, misc=None):
     with open(tsv_file, 'r', encoding='utf-8') as f:
         eof = False
@@ -57,7 +58,7 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
             batch_count += 1
             batch={'cwids':[], 'qwids':[], 'baidx':[], 'eaidx':[], 'ccids':[], 'qcids':[]}
 
-            while not eof and len(batch['cwids']) < seqs:
+            while not eof and len(batch['cwids']) < seqs: # 读取batch
                 line = f.readline()
                 if not line:
                     eof = True
@@ -67,7 +68,7 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
                     import re
                     misc['uid'].append(re.match('^([^\t]*)', line).groups()[0])
 
-                ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
+                ctokens, qtokens, atokens, cwids, qwids,  baidx, eaidx, ccids, qcids, select = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
 
                 batch['cwids'].append(cwids)
                 batch['qwids'].append(qwids)
@@ -75,6 +76,7 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
                 batch['eaidx'].append(eaidx)
                 batch['ccids'].append(ccids)
                 batch['qcids'].append(qcids)
+                batch['select'].append(select)
 
             if len(batch['cwids']) > 0:
                 context_g_words  = C.Value.one_hot([[C.Value.ONE_HOT_SKIP if i >= polymath.wg_dim else i for i in cwids] for cwids in batch['cwids']], polymath.wg_dim)
@@ -85,6 +87,7 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
                 query_chars   = [np.asarray([[[c for c in qc+[0]*max(0,polymath.word_size-len(qc))]] for qc in qcid], dtype=np.float32) for qcid in batch['qcids']]
                 answer_begin = [np.asarray(ab, dtype=np.float32) for ab in batch['baidx']]
                 answer_end   = [np.asarray(ae, dtype=np.float32) for ae in batch['eaidx']]
+                select = [np.asarray(ss,dtype=np.float32) for ss in batch['select']]
 
                 yield { argument_by_name(func, 'cgw'): context_g_words,
                         argument_by_name(func, 'qgw'): query_g_words,
@@ -93,10 +96,10 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
                         argument_by_name(func, 'cc' ): context_chars,
                         argument_by_name(func, 'qc' ): query_chars,
                         argument_by_name(func, 'ab' ): answer_begin,
-                        argument_by_name(func, 'ae' ): answer_end }
+                        argument_by_name(func, 'ae' ): answer_end,
+                        argument_by_name(func, 'sl'): select }
             else:
                 yield {} # need to generate empty batch for distributed training
-
 import pprint
 def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
     training_config = importlib.import_module(config_file).training_config
@@ -237,21 +240,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
             if not post_epoch_work(epoch_stat):
                 break
     else:
-        if train_data_ext != '.tsv':
-            raise Exception("Unsupported format")
-
-        minibatch_seqs = training_config['minibatch_seqs'] # number of sequences
-
-        for epoch in range(max_epochs):       # loop over epochs
-            tsv_reader = create_tsv_reader(loss, train_data_file, polymath, minibatch_seqs, C.Communicator.num_workers())
-            minibatch_count = 0
-            for data in tsv_reader:
-                if (minibatch_count % C.Communicator.num_workers()) == C.Communicator.rank():
-                    trainer.train_minibatch(data) # update model with it
-                    dummy.eval()
-                minibatch_count += 1
-            if not post_epoch_work(epoch_stat):
-                break
+        raise Exception("Unsupported format")
 
     if profiling:
         C.debugging.stop_profiler()
@@ -263,12 +252,14 @@ def symbolic_best_span(begin, end):
 def validate_model(test_data, model, polymath,config_file):
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
-    loss         = model.outputs[2]
+    cls_score    = model.outputs[2]
+    loss         = model.outputs[3]
     root = C.as_composite(loss.owner)
     mb_source, input_map = create_mb_and_map(root, test_data, polymath, randomize=False, repeat=False)
     begin_label = argument_by_name(root, 'ab')
     end_label   = argument_by_name(root, 'ae')
 
+    # 根据预测结果算loss
     begin_prediction = C.sequence.input_variable(1, sequence_axis=begin_label.dynamic_axes[1], needs_gradient=True)
     end_prediction = C.sequence.input_variable(1, sequence_axis=end_label.dynamic_axes[1], needs_gradient=True)
 
@@ -363,11 +354,13 @@ def test(test_data, model_path, model_file, config_file):
     model = C.load_model(os.path.join(model_path, model_file if model_file else model_name))
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
-    loss         = C.as_composite(model.outputs[2].owner)
+    cls_scores    = model.outputs[2]
+    loss         = C.as_composite(model.outputs[3].owner)
     begin_prediction = C.sequence.input_variable(1, sequence_axis=begin_logits.dynamic_axes[1], needs_gradient=True)
     end_prediction = C.sequence.input_variable(1, sequence_axis=end_logits.dynamic_axes[1], needs_gradient=True)
     best_span_score = symbolic_best_span(begin_prediction, end_prediction)
     predicted_span = C.layers.Recurrence(C.plus)(begin_prediction - C.sequence.past_value(end_prediction))
+    cls_prediction = C.input_variable(1, needs_gradient=True)
 
     batch_size = 32 # in sequences
     misc = {'rawctx':[], 'ctoken':[], 'answer':[], 'uid':[]}

@@ -32,6 +32,7 @@ class PolyMath:
         self.two_step = model_config['two_step']
         self.use_cudnn = model_config['use_cudnn']
         self.use_sparse = True
+        self.ldb = model_config['lambda'] # 控制两个loss的平衡
 
         print('dropout', self.dropout)
         print('use_cudnn', self.use_cudnn)
@@ -100,17 +101,17 @@ class PolyMath:
         #convert query's sequence axis to static
         qvw, qvw_mask = C.sequence.unpack(q_processed, padding_value=0).outputs
 
-        # so W * [h; u; h.* u] becomes w1 * h + w2 * u + w3 * (h.*u)
+        # so W * [h; u; h.* u] becomes w1 * h + w2 * u + w4 * (h.*u)
         ws1 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
         ws2 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
-        # ws3 = C.parameter(shape=(1, 2 * self.hidden_dim), init=C.glorot_uniform())
         ws3 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
+        ws4 = C.parameter(shape=(1, 2 * self.hidden_dim), init=C.glorot_uniform())
         att_bias = C.parameter(shape=(), init=0)
 
         wh = C.times (c_processed, ws1) # [#,c][1]
         wu = C.reshape(C.times (qvw, ws2), (-1,)) # [#][*]
-        # qvw*ws3: [#][*,200], whu:[#,c][*]
-        # whu = C.reshape(C.reduce_sum(c_processed * C.sequence.broadcast_as(qvw * ws3, c_processed), axis=1), (-1,))
+        # qvw*ws4: [#][*,200], whu:[#,c][*]
+        whu = C.reshape(C.reduce_sum(c_processed * C.sequence.broadcast_as(qvw * ws4, c_processed), axis=1), (-1,))
         S1 = wh + C.sequence.broadcast_as(wu, c_processed) + att_bias # [#,c][*]
         qvw_mask_expanded = C.sequence.broadcast_as(qvw_mask, c_processed)
         S1 = C.element_select(qvw_mask_expanded, S1, C.constant(-1e+30))
@@ -132,19 +133,23 @@ class PolyMath:
         hh_attn = C.reshape(C.softmax(S2), (-1,1))
         c2c = C.reshape(C.reduce_sum(C.sequence.broadcast_as(hvw, hh_attn)*hh_attn, axis=0), (-1,))
 
-        # 原始文档，题目表示，对问题单词文章表示，文章上下文表示
-        att_context = C.splice(c_processed, c2q, q2c_out, c2c)
+        # 原始文档，题目表示，文章重点表示，匹配度表示，文章上下文表示
+        att_context = C.splice(c_processed, c2q, q2c_out)
+        res = C.combine([att_context, c_processed * c2q, c2c])
 
         return C.as_block(
-            att_context,
+            res,
             [(c_processed, context), (q_processed, query)],
             'attention_layer',
             'attention_layer')
             
-    def modeling_layer(self, attention_context):
+    def modeling_layer(self, attention_context_cls, attention_context_reg):
         '''
         在第一遍阅读后，对文章的整体表示
         '''
+        ph1 = C.placeholder(shape=(8*self.hidden_dim,))
+        ph2 = C.placeholder(shape=(8*self.hidden_dim,))
+
         att_context = C.placeholder(shape=(8*self.hidden_dim,))
         #modeling layer
         # todo: use dropout in optimized_rnn_stack from cudnn once API exposes it
@@ -154,9 +159,11 @@ class PolyMath:
             C.layers.Dropout(self.dropout),
             OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn1')])(att_context)
 
+        mod_out_cls = mod_context.clone(C.CloneMethod.clone, {att_context: attention_context_cls})
+        mod_out_reg = mod_context.clone(C.CloneMethod.clone, {att_context: attention_context_reg})
         return C.as_block(
-            mod_context,
-            [(att_context, attention_context)],
+            C.combine([mod_out_cls, mod_out_reg]),
+            [(ph1, attention_context_cls),(ph2, attention_context_reg)],
             'modeling_layer',
             'modeling_layer')
     
@@ -196,29 +203,37 @@ class PolyMath:
         qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        sl = C.input_variable(1, dynamic_axes=[b,C.Axis.new_unique_dynamic_axis('sl')], name='selected')
 
         #input layer
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
         q_int = C.sequence.last(q_processed) # [#][2*hidden_dim]
         # attention layer output:[#,c][8*hidden_dim]
-        att_context = self.attention_layer(c_processed, q_processed)
+        att_1,att_2,att_3 = self.attention_layer(c_processed, q_processed).outputs
+        att_context_cls = C.splice(att_1, att_2)
+        att_context_reg = C.splice(att_1, att_3)
 
         # modeling layer output:[#,c][2*hidden_dim]
-        mod_context = self.modeling_layer(att_context)
-        q_int_extend = C.sequence.broadcast_as(q_int, c_processed) # [#,c][2*hidden_dim]
-        W_match = C.parameter(shape=(2*hidden_dim,2*hidden_dim), init=C.glorot_uniform())
-        match_level = C.sigmoid(C.reduce_sum(C.times_transpose(W_match, mod_context)*q_int_extend)) #[#,c][1]
-        mod_context = mod_context * match_level
+        mod_context_cls,  mod_context_reg= self.modeling_layer(att_context_cls, att_context_reg).outputs
 
+        # classify
+        mod_context_cls = C.sequence.unpack(mod_context_cls, 0, True) # [#][*, 2*hidden_dim]
+        cls_p = C.layers.Dense(1, activation=C.sigmoid)(mod_context_cls) # [#][1]
         # output layer
-        start_logits, end_logits = self.output_layer(att_context, mod_context).outputs
+        start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
 
         # loss
-        start_loss = seq_loss(start_logits, ab)
-        end_loss = seq_loss(end_logits, ae)
-        #paper_loss = start_loss + end_loss
-        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
+        # start_loss = seq_loss(start_logits, ab)
+        # end_loss = seq_loss(end_logits, ae)
+        # paper_loss = start_loss + end_loss
+     
+        # 负数
+        sl = C.reshape(C.sequence.last(sl),(-1,)) # [#][1]
+        cons_1 = C.constant(1)
+        cls_loss = C.constant(self.lbd) * (cons_1-sl)*C.log(cons1-cls_p) + s1*log(cls_p) 
+        # span loss [#][1] + cls loss [#][1]
+        new_loss = s1*all_spans_loss(start_logits, ab, end_logits, ae) - cls_loss
         new_loss.as_numpy = False
-        res = C.combine([start_logits, end_logits])
+        res = C.combine([start_logits, end_logits, cls_p])
         res.as_numpy=False
         return res, new_loss
