@@ -119,7 +119,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     tensorboard_logdir = os.path.join(data_path,training_config['logdir'],log_file)
 
     polymath = PolyMath(config_file)
-    z, loss = polymath.model()
+    z, loss, metric = polymath.model()
 
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']
@@ -154,7 +154,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)
 
-    trainer = C.Trainer(z, (loss, None), learner, progress_writers)
+    trainer = C.Trainer(z, (loss, metric), learner, progress_writers)
 
     if profiling:
         C.debugging.start_profiler(sync_gpu=True)
@@ -234,7 +234,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
 
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
-                pprint(dummy.eval())
+                # pprint(dummy.eval())
                 if num_seq >= epoch_size:
                     break
             if not post_epoch_work(epoch_stat):
@@ -264,6 +264,7 @@ def validate_model(test_data, model, polymath,config_file):
     # 根据预测结果算loss
     begin_prediction = C.sequence.input_variable(1, sequence_axis=begin_label.dynamic_axes[1], needs_gradient=True)
     end_prediction = C.sequence.input_variable(1, sequence_axis=end_label.dynamic_axes[1], needs_gradient=True)
+    cls_prediction = C.input_variable(1)
 
     best_span_score = symbolic_best_span(begin_prediction, end_prediction)
     predicted_span = C.layers.Recurrence(C.plus)(begin_prediction - C.sequence.past_value(end_prediction))
@@ -294,7 +295,7 @@ def validate_model(test_data, model, polymath,config_file):
         data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
         if not data or not (begin_label in data) or data[begin_label].num_sequences == 0:
             break
-        out = model.eval(data, outputs=[begin_logits,end_logits,loss], as_numpy=False)
+        out = model.eval(data, outputs=[begin_logits,end_logits,cls_score,loss], as_numpy=False)
         testloss = out[loss]
         g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
         other_input_map = {begin_prediction: g[begin_prediction], end_prediction: g[end_prediction], begin_label: data[begin_label], end_label: data[end_label]}

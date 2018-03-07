@@ -217,13 +217,11 @@ class PolyMath:
 
         # classify
         cls_p = C.layers.Dense(1, activation=C.sigmoid)(mod_context_cls) # [#][1]
+        cls_res = C.greater(cls_p, C.constant(0.5))
         # output layer
         start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
 
         # loss
-        # start_loss = seq_loss(start_logits, ab)
-        # end_loss = seq_loss(end_logits, ae)
-        # paper_loss = start_loss + end_loss
      
         # 负数
         slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
@@ -232,6 +230,8 @@ class PolyMath:
         # span loss [#][1] + cls loss [#][1]
         new_loss = slc*all_spans_loss(start_logits, ab, end_logits, ae) + cls_loss
         new_loss.as_numpy = False
+
+        metric = C.classification_error(cls_res, slc)
         res = C.combine([start_logits, end_logits, cls_p])
         res.as_numpy=False
-        return res, new_loss
+        return res, new_loss, metric
