@@ -246,8 +246,10 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         C.debugging.stop_profiler()
 
 def symbolic_best_span(begin, end):
-    running_max_begin = C.layers.Recurrence(C.element_max, initial_state=-float("inf"))(begin)
-    return C.layers.Fold(C.element_max, initial_state=C.constant(-1e+30))(running_max_begin + end)
+    # 获得当前最大值，作为begin+end的预测分数
+    max_begin = C.layers.Fold(C.element_max, initial_state=-float("inf"))(begin)
+    max_end = C.layers.Fold(C.element_max, initial_state=-float("inf"))(end)
+    return max_begin+max_end # [#][1]
 
 def validate_model(test_data, model, polymath,config_file):
     begin_logits = model.outputs[0]
@@ -359,8 +361,9 @@ def test(test_data, model_path, model_file, config_file):
     begin_prediction = C.sequence.input_variable(1, sequence_axis=begin_logits.dynamic_axes[1], needs_gradient=True)
     end_prediction = C.sequence.input_variable(1, sequence_axis=end_logits.dynamic_axes[1], needs_gradient=True)
     best_span_score = symbolic_best_span(begin_prediction, end_prediction)
+    # 开始-0+0-结束=开始-结束 即长度
     predicted_span = C.layers.Recurrence(C.plus)(begin_prediction - C.sequence.past_value(end_prediction))
-    cls_prediction = C.input_variable(1, needs_gradient=True)
+    cls_prediction = C.input_variable(1, needs_gradient=True) # [#][1]
 
     batch_size = 32 # in sequences
     misc = {'rawctx':[], 'ctoken':[], 'answer':[], 'uid':[]}
@@ -368,11 +371,17 @@ def test(test_data, model_path, model_file, config_file):
     results = {}
     with open('{}_out.json'.format(model_file), 'w', encoding='utf-8') as json_output:
         for data in tsv_reader:
-            out = model.eval(data, outputs=[begin_logits,end_logits,loss], as_numpy=False)
+            out = model.eval(data, outputs=[begin_logits,end_logits,cls_scores,loss], as_numpy=False)
+            # 计算正负例, 大于0.5为正
+            cls_res = C.greater(cls_prediction,C.constant(0.5)).eval({cls_prediction:out[cls_scores]}) # [#][1]
+            # 计算梯度，只有被选为最大的那2个位置梯度为1 # [#,c][1]
             g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
-            other_input_map = {begin_prediction: g[begin_prediction], end_prediction: g[end_prediction]}
-            span = predicted_span.eval((other_input_map))
+            begin_res, end_res = g[begin_prediction], g[end_prediction]
+            span = begin_res+end_res
+            # 去掉预测为负例的结果
             for seq, (raw_text, ctokens, answer, uid) in enumerate(zip(misc['rawctx'], misc['ctoken'], misc['answer'], misc['uid'])):
+                if cls_res[seq] <= 0:
+                    continue
                 seq_where = np.argwhere(span[seq])[:,0]
                 span_begin = np.min(seq_where)
                 span_end = np.max(seq_where)

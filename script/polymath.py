@@ -230,9 +230,9 @@ class PolyMath:
         # 负数
         sl = C.reshape(C.sequence.last(sl),(-1,)) # [#][1]
         cons_1 = C.constant(1)
-        cls_loss = C.constant(self.lbd) * (cons_1-sl)*C.log(cons1-cls_p) + s1*log(cls_p) 
+        cls_loss = C.binary_cross_entropy(cls_p ,s1, name='classify')
         # span loss [#][1] + cls loss [#][1]
-        new_loss = s1*all_spans_loss(start_logits, ab, end_logits, ae) - cls_loss
+        new_loss = s1*all_spans_loss(start_logits, ab, end_logits, ae) + cls_loss
         new_loss.as_numpy = False
         res = C.combine([start_logits, end_logits, cls_p])
         res.as_numpy=False
