@@ -47,7 +47,7 @@ def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
         argument_by_name(func, 'qc' ): mb_source.streams.query_chars,
         argument_by_name(func, 'ab' ): mb_source.streams.answer_begin,
         argument_by_name(func, 'ae' ): mb_source.streams.answer_end,
-        argument_by_name(func, 'select': mb_source.streams.is_selected)
+        argument_by_name(func, 'select'): mb_source.streams.is_selected
     }
     return mb_source, input_map
 def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False, misc=None):
@@ -356,14 +356,14 @@ def test(test_data, model_path, model_file, config_file):
     model = C.load_model(os.path.join(model_path, model_file if model_file else model_name))
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
-    cls_scores    = model.outputs[2]
+    cls_scores   = model.outputs[2]
     loss         = C.as_composite(model.outputs[3].owner)
     begin_prediction = C.sequence.input_variable(1, sequence_axis=begin_logits.dynamic_axes[1], needs_gradient=True)
     end_prediction = C.sequence.input_variable(1, sequence_axis=end_logits.dynamic_axes[1], needs_gradient=True)
+    cls_prediction = C.input_variable(1) # [#][1]
     best_span_score = symbolic_best_span(begin_prediction, end_prediction)
     # 开始-0+0-结束=开始-结束 即长度
-    predicted_span = C.layers.Recurrence(C.plus)(begin_prediction - C.sequence.past_value(end_prediction))
-    cls_prediction = C.input_variable(1, needs_gradient=True) # [#][1]
+    # predicted_span = C.layers.Recurrence(C.plus)(begin_prediction - C.sequence.past_value(end_prediction))
 
     batch_size = 32 # in sequences
     misc = {'rawctx':[], 'ctoken':[], 'answer':[], 'uid':[]}
@@ -378,6 +378,7 @@ def test(test_data, model_path, model_file, config_file):
             g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
             begin_res, end_res = g[begin_prediction], g[end_prediction]
             span = begin_res+end_res
+            print(span);return
             # 去掉预测为负例的结果
             for seq, (raw_text, ctokens, answer, uid) in enumerate(zip(misc['rawctx'], misc['ctoken'], misc['answer'], misc['uid'])):
                 if cls_res[seq] <= 0:

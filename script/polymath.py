@@ -32,7 +32,7 @@ class PolyMath:
         self.two_step = model_config['two_step']
         self.use_cudnn = model_config['use_cudnn']
         self.use_sparse = True
-        self.ldb = model_config['lambda'] # 控制两个loss的平衡
+        # self.ldb = model_config['lambda'] # 控制两个loss的平衡
 
         print('dropout', self.dropout)
         print('use_cudnn', self.use_cudnn)
@@ -137,8 +137,7 @@ class PolyMath:
         att_context = C.splice(c_processed, c2q, q2c_out)
         res = C.combine([att_context, c_processed * c2q, c2c])
 
-        return C.as_block(
-            res,
+        return C.as_block( res,
             [(c_processed, context), (q_processed, query)],
             'attention_layer',
             'attention_layer')
@@ -151,7 +150,6 @@ class PolyMath:
         ph2 = C.placeholder(shape=(8*self.hidden_dim,))
 
         att_context = C.placeholder(shape=(8*self.hidden_dim,))
-        #modeling layer
         # todo: use dropout in optimized_rnn_stack from cudnn once API exposes it
         mod_context = C.layers.Sequential([
             C.layers.Dropout(self.dropout),
@@ -159,8 +157,9 @@ class PolyMath:
             C.layers.Dropout(self.dropout),
             OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn1')])(att_context)
 
-        mod_out_cls = mod_context.clone(C.CloneMethod.clone, {att_context: attention_context_cls})
-        mod_out_reg = mod_context.clone(C.CloneMethod.clone, {att_context: attention_context_reg})
+        mod_out_cls = C.sequence.last(mod_context.clone(C.CloneMethod.clone, {att_context: ph1}))
+        mod_out_reg = mod_context.clone(C.CloneMethod.clone, {att_context: ph2})
+
         return C.as_block(
             C.combine([mod_out_cls, mod_out_reg]),
             [(ph1, attention_context_cls),(ph2, attention_context_reg)],
@@ -203,7 +202,7 @@ class PolyMath:
         qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
-        sl = C.input_variable(1, dynamic_axes=[b,C.Axis.new_unique_dynamic_axis('sl')], name='selected')
+        slc = C.input_variable(1, dynamic_axes=[b,C.Axis.new_unique_dynamic_axis('sl')], name='selected')
 
         #input layer
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
@@ -213,11 +212,10 @@ class PolyMath:
         att_context_cls = C.splice(att_1, att_2)
         att_context_reg = C.splice(att_1, att_3)
 
-        # modeling layer output:[#,c][2*hidden_dim]
+        # modeling layer output:[#][2*hidden_dim] [#,c][2*hidden_dim]
         mod_context_cls,  mod_context_reg= self.modeling_layer(att_context_cls, att_context_reg).outputs
 
         # classify
-        mod_context_cls = C.sequence.unpack(mod_context_cls, 0, True) # [#][*, 2*hidden_dim]
         cls_p = C.layers.Dense(1, activation=C.sigmoid)(mod_context_cls) # [#][1]
         # output layer
         start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
@@ -228,11 +226,11 @@ class PolyMath:
         # paper_loss = start_loss + end_loss
      
         # 负数
-        sl = C.reshape(C.sequence.last(sl),(-1,)) # [#][1]
+        slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
         cons_1 = C.constant(1)
-        cls_loss = C.binary_cross_entropy(cls_p ,s1, name='classify')
+        cls_loss = C.binary_cross_entropy(cls_p ,slc, name='classify')
         # span loss [#][1] + cls loss [#][1]
-        new_loss = s1*all_spans_loss(start_logits, ab, end_logits, ae) + cls_loss
+        new_loss = slc*all_spans_loss(start_logits, ab, end_logits, ae) + cls_loss
         new_loss.as_numpy = False
         res = C.combine([start_logits, end_logits, cls_p])
         res.as_numpy=False
