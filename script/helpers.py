@@ -69,7 +69,10 @@ def all_spans_loss(start_logits, start_y, end_logits, end_y):
     x = C.layers.Recurrence(C.log_add_exp, go_backwards=True, initial_state=-1e+30)(end_logits)
     y = start_logits + x
     logZ = C.layers.Fold(C.log_add_exp, initial_state=-1e+30)(y)
-    return logZ - C.sequence.last(C.sequence.gather(start_logits, start_y)) - C.sequence.last(C.sequence.gather(end_logits, end_y))
+    # 使用元素相乘代替gather, 防止没有1的时候sequence.last出错
+    fst = C.sequence.reduce_sum((start_y*start_logits)+(end_y*end_logits))
+    #return logZ - C.sequence.last(C.sequence.gather(start_logits, start_y)) - C.sequence.last(C.sequence.gather(end_logits, end_y))
+    return logZ - fst
 
 def seq_hardmax(logits):
     # [#][dim=1]

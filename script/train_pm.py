@@ -1,3 +1,4 @@
+# -*- coding:utf8
 import cntk as C
 import numpy as np
 from polymath import PolyMath
@@ -45,8 +46,8 @@ def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
         argument_by_name(func, 'qnw'): mb_source.streams.query_ng_words,
         argument_by_name(func, 'cc' ): mb_source.streams.context_chars,
         argument_by_name(func, 'qc' ): mb_source.streams.query_chars,
-        #argument_by_name(func, 'ab' ): mb_source.streams.answer_begin,
-        #argument_by_name(func, 'ae' ): mb_source.streams.answer_end,
+        argument_by_name(func, 'ab' ): mb_source.streams.answer_begin,
+        argument_by_name(func, 'ae' ): mb_source.streams.answer_end,
         argument_by_name(func, 'sl'): mb_source.streams.is_selected
     }
     return mb_source, input_map

@@ -260,6 +260,8 @@ class PolyMath:
         mod_context_cls,  mod_context_reg= self.modeling_layer(att_context_cls, att_context_reg).outputs
         mod_context_cls = C.sequence.last(mod_context_cls)
 
+
+        start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
         # classify
         cls_p = C.layers.Dense(1, activation=C.sigmoid)(mod_context_cls) # [#][1]
         cls_res = C.greater(cls_p, C.constant(0.5))
@@ -267,6 +269,8 @@ class PolyMath:
         slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
         cons_1 = C.constant(1)
         cls_loss = C.binary_cross_entropy(cls_p ,slc, name='classify')
-
-        return C.combine(cls_loss, mod_context_reg)
+        # span loss [#][1] + cls loss [#][1]
+        # 在这里出错
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc + cls_loss
+        return C.combine(end_logits, cls_loss, C.sequence.last(ab), new_loss)
 
