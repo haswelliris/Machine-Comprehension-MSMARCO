@@ -177,7 +177,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     if restore and os.path.isfile(model_file):
         trainer.restore_from_checkpoint(model_file)
         #after restore always re-evaluate
-        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath)
+        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath, config_file)
 
     def post_epoch_work(epoch_stat):
         trainer.summarize_training_progress()
@@ -188,7 +188,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
             temp = dict((p.uid, p.value) for p in z.parameters)
             for p in trainer.model.parameters:
                 p.value = ema[p.uid].value
-            val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath)
+            val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath, config_file)
             if epoch_stat['best_val_err'] > val_err:
                 epoch_stat['best_val_err'] = val_err
                 epoch_stat['best_since'] = 0
@@ -238,8 +238,8 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                 else:
                     data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
 
-                for k,v in data.items():
-                    print('{}:{}'.format(k, v.data.shape))
+                #for k,v in data.items():
+                #    print('{}:{}'.format(k, v.data.shape))
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
                 # pprint(dummy.eval())
@@ -260,6 +260,7 @@ def symbolic_best_span(begin, end):
     return max_begin+max_end # [#][1]
 
 def validate_model(test_data, model, polymath,config_file):
+    training_config = importlib.import_module(config_file).training_config
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
     cls_score    = model.outputs[2]

@@ -227,7 +227,7 @@ class PolyMath:
         cons_1 = C.constant(1)
         cls_loss = C.binary_cross_entropy(cls_p ,slc, name='classify')
         # span loss [#][1] + cls loss [#][1]
-        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc + cls_loss
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc + C.constant(20.0)*cls_loss
 
         metric = C.classification_error(cls_res, slc)
         res = C.combine([start_logits, end_logits, cls_p])
