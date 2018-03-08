@@ -202,7 +202,7 @@ class PolyMath:
         qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
-        slc = C.input_variable(1, dynamic_axes=[b,C.Axis.new_unique_dynamic_axis('sl')], name='selected')
+        slc = C.input_variable(1, name='selected')
 
         #input layer
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
@@ -226,12 +226,34 @@ class PolyMath:
         # paper_loss = start_loss + end_loss
      
         # 负数
-        slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
+        # slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
         cons_1 = C.constant(1)
         cls_loss = C.binary_cross_entropy(cls_p ,slc, name='classify')
         # span loss [#][1] + cls loss [#][1]
-        new_loss = slc*all_spans_loss(start_logits, ab, end_logits, ae) + cls_loss
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc + cls_loss
         new_loss.as_numpy = False
         res = C.combine([start_logits, end_logits, cls_p])
         res.as_numpy=False
         return res, new_loss
+
+    def debug(self):
+        c = C.Axis.new_unique_dynamic_axis('c')
+        q = C.Axis.new_unique_dynamic_axis('q')
+        b = C.Axis.default_batch_axis()
+        cgw = C.input_variable(self.wg_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cgw')
+        cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
+        qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
+        qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
+        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
+        ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        slc = C.input_variable(1, name='selected')
+        
+        ops = C.sequence.first
+        a=ops(cgw)
+        # a,b,c,d,e,f,g,h = ops(cgw), ops(cnw), ops(qgw), ops(qnw), ops(cc), ops(qc), ops(ab), ops(ae)
+        res = C.combine([slc,slc])
+        res.as_numpy=False
+        return res 
+

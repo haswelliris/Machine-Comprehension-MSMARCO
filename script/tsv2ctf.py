@@ -110,7 +110,7 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
         misc['rawctx'] += [context]
         misc['ctoken'] += [ctokens]
 
-    return ctokens, qtokens, atokens, cwids, qwids, baidx, eaidx, ccids, qcids, select
+    return ctokens, qtokens, atokens, cwids, qwids, baidx, eaidx, ccids, qcids, [select]
 
 def tsv_to_ctf(f, g, vocab, chars, is_test):
     print("Known words: %d" % known)

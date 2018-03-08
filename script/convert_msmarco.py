@@ -165,7 +165,7 @@ def convert(file, outfile, is_test):
                                     if not bad:
                                         output = [str(j['query_id']), j['query_type'], ' '.join(nctokens),' '.join(qtokens),' '.join(nctokens[start:end]), normalized_context, str(start), str(end), normalized_answer, '1']
                             else: # 不是候选答案的文章
-                                output = [str(j['query_id']), j['query_type'], ' '.join(nctokens),' '.join(qtokens),'', normalized_context, '-1', '-1', '', '0']
+                                output = [str(j['query_id']), j['query_type'], ' '.join(nctokens),' '.join(qtokens),'<NULL>', normalized_context, '-1', '-1', '<NULL>', '0']
                         else: # test
                             output = [str(j['query_id']), j['query_type'], ' '.join(nctokens),' '.join(qtokens)]
                         out.write("%s\n"%'\t'.join(output))
