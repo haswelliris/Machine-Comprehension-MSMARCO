@@ -24,7 +24,7 @@ training_config = {
     'epoch_size'        : 80000,   # in sequences, when using ctf reader
     'log_freq'          : 100,     # in minibatchs
     'max_epochs'        : 70000,
-    'lr'                : 3,
+    'lr'                : 2,
     'train_data'        : 'train.ctf',  # or 'train.tsv'
     'val_data'          : 'dev.ctf',
     'val_interval'      : 1,       # interval in epochs to run validation

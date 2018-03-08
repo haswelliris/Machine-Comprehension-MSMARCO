@@ -151,7 +151,8 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         dummies.append(C.reduce_sum(C.assign(ema_p, 0.999 * ema_p + 0.001 * p)))
     dummy = C.combine(dummies)
 
-    learner = C.adadelta(z.parameters, lr)
+    schedule = C.learning_parameter_schedule([(1,1),(1500,0.1),(5000,0.01),(10000,0.01)])
+    learner = C.adadelta(z.parameters, schedule)
 
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)
@@ -294,11 +295,12 @@ def validate_model(test_data, model, polymath,config_file):
     stats = C.splice(s(f1), s(exact_match), s(precision), s(recall), s(overlap), s(begin_match), s(end_match))
 
     # Evaluation parameters
-    minibatch_size = int(training_config['minibatch_size']/4)
+    minibatch_size = 1024 # int(training_config['minibatch_size']/4)
     num_sequences = 0
 
     stat_sum = 0
     loss_sum = 0
+
 
     while True:
         data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
