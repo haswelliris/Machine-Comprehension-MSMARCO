@@ -35,7 +35,7 @@ def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
                 context_chars    = C.io.StreamDef('cc',  shape=polymath.word_size,  is_sparse=False),
                 query_chars      = C.io.StreamDef('qc',  shape=polymath.word_size,  is_sparse=False),
                 is_selected = C.io.StreamDef('sl', shape=1, is_sparse=False))),
-        randomize=randomize,
+        randomize=randomize, randomization_window_in_chunks=1024, randomization_window_in_samples=0,
         max_sweeps=C.io.INFINITELY_REPEAT if repeat else 1)
 
     input_map = {
@@ -45,9 +45,9 @@ def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
         argument_by_name(func, 'qnw'): mb_source.streams.query_ng_words,
         argument_by_name(func, 'cc' ): mb_source.streams.context_chars,
         argument_by_name(func, 'qc' ): mb_source.streams.query_chars,
-        argument_by_name(func, 'ab' ): mb_source.streams.answer_begin,
-        argument_by_name(func, 'ae' ): mb_source.streams.answer_end,
-        argument_by_name(func, 'select'): mb_source.streams.is_selected
+        #argument_by_name(func, 'ab' ): mb_source.streams.answer_begin,
+        #argument_by_name(func, 'ae' ): mb_source.streams.answer_end,
+        argument_by_name(func, 'sl'): mb_source.streams.is_selected
     }
     return mb_source, input_map
 def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False, misc=None):
@@ -101,6 +101,7 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
             else:
                 yield {} # need to generate empty batch for distributed training
 import pprint
+#C.logging.set_trace_level(C.logging.TraceLevel.Info)
 def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
@@ -119,7 +120,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     tensorboard_logdir = os.path.join(data_path,training_config['logdir'],log_file)
 
     polymath = PolyMath(config_file)
-    z, loss = polymath.model()
+    z, loss, metric = polymath.model()
 
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']
@@ -154,7 +155,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)
 
-    trainer = C.Trainer(z, (loss, None), learner, progress_writers)
+    trainer = C.Trainer(z, (loss, metric), learner, progress_writers)
 
     if profiling:
         C.debugging.start_profiler(sync_gpu=True)
@@ -219,11 +220,15 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         return True
 
     if train_data_ext == '.ctf':
-        mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath)
-
+        #mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath)
+        model = polymath.debug()
+        mb_source, input_map = create_mb_and_map(model,train_data_file, polymath)
         minibatch_size = training_config['minibatch_size'] # number of samples
         epoch_size = training_config['epoch_size']
-
+        data = mb_source.next_minibatch(minibatch_size,input_map=input_map)
+        res = model.eval(data, as_numpy=False)
+        print(res)
+'''
         for epoch in range(max_epochs):
             num_seq = 0
             while True:
@@ -232,9 +237,11 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                 else:
                     data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
 
+                for k,v in data.items():
+                    print('{}:{}'.format(k, v.data.shape))
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
-                pprint(dummy.eval())
+                # pprint(dummy.eval())
                 if num_seq >= epoch_size:
                     break
             if not post_epoch_work(epoch_stat):
@@ -244,7 +251,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
 
     if profiling:
         C.debugging.stop_profiler()
-
+'''
 def symbolic_best_span(begin, end):
     # 获得当前最大值，作为begin+end的预测分数
     max_begin = C.layers.Fold(C.element_max, initial_state=-float("inf"))(begin)
@@ -264,6 +271,7 @@ def validate_model(test_data, model, polymath,config_file):
     # 根据预测结果算loss
     begin_prediction = C.sequence.input_variable(1, sequence_axis=begin_label.dynamic_axes[1], needs_gradient=True)
     end_prediction = C.sequence.input_variable(1, sequence_axis=end_label.dynamic_axes[1], needs_gradient=True)
+    cls_prediction = C.input_variable(1)
 
     best_span_score = symbolic_best_span(begin_prediction, end_prediction)
     predicted_span = C.layers.Recurrence(C.plus)(begin_prediction - C.sequence.past_value(end_prediction))
@@ -294,7 +302,7 @@ def validate_model(test_data, model, polymath,config_file):
         data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
         if not data or not (begin_label in data) or data[begin_label].num_sequences == 0:
             break
-        out = model.eval(data, outputs=[begin_logits,end_logits,loss], as_numpy=False)
+        out = model.eval(data, outputs=[begin_logits,end_logits,cls_score,loss], as_numpy=False)
         testloss = out[loss]
         g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
         other_input_map = {begin_prediction: g[begin_prediction], end_prediction: g[end_prediction], begin_label: data[begin_label], end_label: data[end_label]}

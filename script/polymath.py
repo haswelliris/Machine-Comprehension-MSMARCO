@@ -56,7 +56,7 @@ class PolyMath:
                     npglove[self.vocab[word],:] = np.asarray([float(p) for p in parts[1:]])
         glove = C.constant(npglove)
         nonglove = C.parameter(shape=(len(self.vocab) - self.wg_dim, self.hidden_dim), init=C.glorot_uniform(), name='TrainableE')
-        
+
         def func(wg, wn):
             return C.times(wg, glove) + C.times(wn, nonglove)
         return func
@@ -81,10 +81,10 @@ class PolyMath:
         highway = HighwayNetwork(dim=2*self.hidden_dim, highway_layers=self.highway_layers)(embedded)
         highway_drop = C.layers.Dropout(self.dropout)(highway)
         processed = OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='input_rnn')(highway_drop)
-        
+
         qce = C.one_hot(qc_ph, num_classes=self.c_dim, sparse_output=self.use_sparse)
         cce = C.one_hot(cc_ph, num_classes=self.c_dim, sparse_output=self.use_sparse)
-                
+
         q_processed = processed.clone(C.CloneMethod.share, {input_chars:qce, input_glove_words:qgw_ph, input_nonglove_words:qnw_ph})
         c_processed = processed.clone(C.CloneMethod.share, {input_chars:cce, input_glove_words:cgw_ph, input_nonglove_words:cnw_ph})
 
@@ -93,7 +93,7 @@ class PolyMath:
             [(cgw_ph, cgw),(cnw_ph, cnw),(cc_ph, cc),(qgw_ph, qgw),(qnw_ph, qnw),(qc_ph, qc)],
             'input_layer',
             'input_layer')
-        
+
     def attention_layer(self, context, query):
         q_processed = C.placeholder(shape=(2*self.hidden_dim,))
         c_processed = C.placeholder(shape=(2*self.hidden_dim,))
@@ -117,7 +117,7 @@ class PolyMath:
         S1 = C.element_select(qvw_mask_expanded, S1, C.constant(-1e+30))
         q_attn = C.reshape(C.softmax(S1), (-1,1)) # [#,c][*,1]
         c2q = C.reshape(C.reduce_sum(C.sequence.broadcast_as(qvw, q_attn) * q_attn, axis=0),(-1)) # [#,c][200]
-        
+
         max_col = C.reduce_max(S1) # [#,c][1] 最大的q中的单词
         c_attn = C.sequence.softmax(max_col) # [#,c][1] 对c中的每一个单词做softmax
 
@@ -141,7 +141,7 @@ class PolyMath:
             [(c_processed, context), (q_processed, query)],
             'attention_layer',
             'attention_layer')
-            
+
     def modeling_layer(self, attention_context_cls, attention_context_reg):
         '''
         在第一遍阅读后，对文章的整体表示
@@ -150,14 +150,13 @@ class PolyMath:
         ph2 = C.placeholder(shape=(8*self.hidden_dim,))
 
         att_context = C.placeholder(shape=(8*self.hidden_dim,))
-        # todo: use dropout in optimized_rnn_stack from cudnn once API exposes it
         mod_context = C.layers.Sequential([
             C.layers.Dropout(self.dropout),
             OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn0'),
             C.layers.Dropout(self.dropout),
             OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn1')])(att_context)
 
-        mod_out_cls = C.sequence.last(mod_context.clone(C.CloneMethod.clone, {att_context: ph1}))
+        mod_out_cls = mod_context.clone(C.CloneMethod.clone, {att_context: ph1})
         mod_out_reg = mod_context.clone(C.CloneMethod.clone, {att_context: ph2})
 
         return C.as_block(
@@ -165,7 +164,7 @@ class PolyMath:
             [(ph1, attention_context_cls),(ph2, attention_context_reg)],
             'modeling_layer',
             'modeling_layer')
-    
+
     def output_layer(self, attention_context, modeling_context):
         att_context = C.placeholder(shape=(8*self.hidden_dim,))
         mod_context = C.placeholder(shape=(2*self.hidden_dim,))
@@ -198,15 +197,16 @@ class PolyMath:
         cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
         qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
         qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
-        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
-        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        cc = C.input_variable(self.word_size, dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable(self.word_size, dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
-        slc = C.input_variable(1, name='selected')
+        slc = C.sequence.input_variable(1, name='sl')
 
         #input layer
+        cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
-        q_int = C.sequence.last(q_processed) # [#][2*hidden_dim]
+        # q_int = C.sequence.last(q_processed) # [#][2*hidden_dim]
         # attention layer output:[#,c][8*hidden_dim]
         att_1,att_2,att_3 = self.attention_layer(c_processed, q_processed).outputs
         att_context_cls = C.splice(att_1, att_2)
@@ -214,28 +214,28 @@ class PolyMath:
 
         # modeling layer output:[#][2*hidden_dim] [#,c][2*hidden_dim]
         mod_context_cls,  mod_context_reg= self.modeling_layer(att_context_cls, att_context_reg).outputs
+        mod_context_cls = C.sequence.last(mod_context_cls)
 
         # classify
         cls_p = C.layers.Dense(1, activation=C.sigmoid)(mod_context_cls) # [#][1]
+        cls_res = C.greater(cls_p, C.constant(0.5))
         # output layer
         start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
 
         # loss
-        # start_loss = seq_loss(start_logits, ab)
-        # end_loss = seq_loss(end_logits, ae)
-        # paper_loss = start_loss + end_loss
-     
+
         # 负数
-        # slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
+        slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
         cons_1 = C.constant(1)
         cls_loss = C.binary_cross_entropy(cls_p ,slc, name='classify')
         # span loss [#][1] + cls loss [#][1]
         new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc + cls_loss
         new_loss.as_numpy = False
+
+        metric = C.classification_error(cls_res, slc)
         res = C.combine([start_logits, end_logits, cls_p])
         res.as_numpy=False
-        return res, new_loss
-
+        return res, new_loss, metric
     def debug(self):
         c = C.Axis.new_unique_dynamic_axis('c')
         q = C.Axis.new_unique_dynamic_axis('q')
@@ -244,16 +244,29 @@ class PolyMath:
         cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
         qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
         qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
-        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
-        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        cc = C.input_variable(self.word_size, dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable(self.word_size, dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
-        slc = C.input_variable(1, name='selected')
-        
-        ops = C.sequence.first
-        a=ops(cgw)
-        # a,b,c,d,e,f,g,h = ops(cgw), ops(cnw), ops(qgw), ops(qnw), ops(cc), ops(qc), ops(ab), ops(ae)
-        res = C.combine([slc,slc])
-        res.as_numpy=False
-        return res 
+        slc = C.sequence.input_variable(1, name='sl')
+
+        #input layer
+        cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
+        c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+        att_1,att_2,att_3 = self.attention_layer(c_processed, q_processed).outputs
+        att_context_cls = C.splice(att_1, att_2)
+        att_context_reg = C.splice(att_1, att_3)
+        # modeling layer output:[#][2*hidden_dim] [#,c][2*hidden_dim]
+        mod_context_cls,  mod_context_reg= self.modeling_layer(att_context_cls, att_context_reg).outputs
+        mod_context_cls = C.sequence.last(mod_context_cls)
+
+        # classify
+        cls_p = C.layers.Dense(1, activation=C.sigmoid)(mod_context_cls) # [#][1]
+        cls_res = C.greater(cls_p, C.constant(0.5))
+        # 负数
+        slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
+        cons_1 = C.constant(1)
+        cls_loss = C.binary_cross_entropy(cls_p ,slc, name='classify')
+
+        return C.combine(cls_loss, mod_context_reg)
 
