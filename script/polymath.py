@@ -206,7 +206,6 @@ class PolyMath:
         #input layer
         cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
-        # q_int = C.sequence.last(q_processed) # [#][2*hidden_dim]
         # attention layer output:[#,c][8*hidden_dim]
         att_1,att_2,att_3 = self.attention_layer(c_processed, q_processed).outputs
         att_context_cls = C.splice(att_1, att_2)
@@ -223,14 +222,12 @@ class PolyMath:
         start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
 
         # loss
-
         # 负数
         slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
         cons_1 = C.constant(1)
         cls_loss = C.binary_cross_entropy(cls_p ,slc, name='classify')
         # span loss [#][1] + cls loss [#][1]
         new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc + cls_loss
-        new_loss.as_numpy = False
 
         metric = C.classification_error(cls_res, slc)
         res = C.combine([start_logits, end_logits, cls_p])

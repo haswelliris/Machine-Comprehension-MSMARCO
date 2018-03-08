@@ -114,7 +114,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         print("rank = "+str(my_rank)+", using gpu "+str(my_gpu_id)+" of "+str(gpu_cnt))
         C.try_set_default_device(C.gpu(my_gpu_id))
     else:
-        C.try_set_default_device(C.gpu(0))
+        C.try_set_default_device(C.gpu(3))
     # outputs while training
     normal_log = os.path.join(data_path,training_config['logdir'],log_file)
     # tensorboard files' dir
@@ -221,15 +221,15 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         return True
 
     if train_data_ext == '.ctf':
-        #mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath)
-        model = polymath.debug()
-        mb_source, input_map = create_mb_and_map(model,train_data_file, polymath)
+        mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath)
+        # model = polymath.debug()
+        # mb_source, input_map = create_mb_and_map(model,train_data_file, polymath)
         minibatch_size = training_config['minibatch_size'] # number of samples
         epoch_size = training_config['epoch_size']
-        data = mb_source.next_minibatch(minibatch_size,input_map=input_map)
-        res = model.eval(data, as_numpy=False)
-        print(res)
-'''
+        # data = mb_source.next_minibatch(minibatch_size,input_map=input_map)
+        # res = loss.eval(data)
+        # print(res)
+
         for epoch in range(max_epochs):
             num_seq = 0
             while True:
@@ -252,7 +252,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
 
     if profiling:
         C.debugging.stop_profiler()
-'''
+
 def symbolic_best_span(begin, end):
     # 获得当前最大值，作为begin+end的预测分数
     max_begin = C.layers.Fold(C.element_max, initial_state=-float("inf"))(begin)
