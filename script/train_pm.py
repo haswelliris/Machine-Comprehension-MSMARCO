@@ -46,8 +46,8 @@ def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
         argument_by_name(func, 'qnw'): mb_source.streams.query_ng_words,
         argument_by_name(func, 'cc' ): mb_source.streams.context_chars,
         argument_by_name(func, 'qc' ): mb_source.streams.query_chars,
-        argument_by_name(func, 'ab' ): mb_source.streams.answer_begin,
-        argument_by_name(func, 'ae' ): mb_source.streams.answer_end,
+        #argument_by_name(func, 'ab' ): mb_source.streams.answer_begin,
+        #argument_by_name(func, 'ae' ): mb_source.streams.answer_end,
         argument_by_name(func, 'sl'): mb_source.streams.is_selected
     }
     return mb_source, input_map
@@ -167,7 +167,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
 
     model_file = os.path.join(model_path, model_name)
     model = C.combine(list(z.outputs) + [loss.output])
-    label_ab = argument_by_name(loss, 'ab')
+    #label_ab = argument_by_name(loss, 'ab')
 
     epoch_stat = {
         'best_val_err' : 100,
@@ -214,7 +214,9 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
             else:
                 epoch_stat['best_since'] += 1
                 if epoch_stat['best_since'] > training_config['stop_after']:
-                    return False
+                    # change for train
+                    print('best since>stop after')
+                    #return False
 
         if profiling:
             C.debugging.enable_profiler()
@@ -228,8 +230,8 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         minibatch_size = training_config['minibatch_size'] # number of samples
         epoch_size = training_config['epoch_size']
         # data = mb_source.next_minibatch(minibatch_size,input_map=input_map)
-        # res = loss.eval(data)
-        # print(res)
+        # res = model.eval(data)
+        # print('first eval:', res)
 
         for epoch in range(max_epochs):
             num_seq = 0
@@ -239,6 +241,9 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                 else:
                     data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
 
+                if epoch==0 and num_seq==0:
+                    res = model.eval(data)
+                    print('first eval:{}'.format(res))
                 #for k,v in data.items():
                 #    print('{}:{}'.format(k, v.data.shape))
                 trainer.train_minibatch(data)

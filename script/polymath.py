@@ -134,8 +134,9 @@ class PolyMath:
         c2c = C.reshape(C.reduce_sum(C.sequence.broadcast_as(hvw, hh_attn)*hh_attn, axis=0), (-1,))
 
         # 原始文档，题目表示，文章重点表示，匹配度表示，文章上下文表示
-        att_context = C.splice(c_processed, c2q, q2c_out)
-        res = C.combine([att_context, c_processed * c2q, c2c])
+        att_context_reg = C.splice(c_processed, c2q, q2c_out, c2c)
+        att_context_cls = C.splice(c_processed, c2q, q2c_out, c_processed*c2q)
+        res = C.combine([att_context_cls, att_context_reg])
 
         return C.as_block( res,
             [(c_processed, context), (q_processed, query)],
@@ -143,6 +144,7 @@ class PolyMath:
             'attention_layer')
 
     def modeling_layer(self, attention_context_cls, attention_context_reg):
+    #def modeling_layer(self, attention_context_reg):
         '''
         在第一遍阅读后，对文章的整体表示
         '''
@@ -155,9 +157,16 @@ class PolyMath:
             OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn0'),
             C.layers.Dropout(self.dropout),
             OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn1')])(att_context)
+        cls_context = C.layers.Sequential([
+            C.layers.Dropout(self.dropout),
+            OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn2'),
+            C.layers.Dropout(self.dropout), C.sequence.last,
+            C.layers.Dense(100, activation=C.relu),
+            C.layers.Dropout(self.dropout),
+            C.layers.Dense(1, activation=C.sigmoid)])(att_context)
 
-        mod_out_cls = mod_context.clone(C.CloneMethod.clone, {att_context: ph1})
-        mod_out_reg = mod_context.clone(C.CloneMethod.clone, {att_context: ph2})
+        mod_out_cls = cls_context.clone(C.CloneMethod.share, {att_context: ph1})
+        mod_out_reg = mod_context.clone(C.CloneMethod.share, {att_context: ph2})
 
         return C.as_block(
             C.combine([mod_out_cls, mod_out_reg]),
@@ -207,32 +216,25 @@ class PolyMath:
         cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
         # attention layer output:[#,c][8*hidden_dim]
-        att_1,att_2,att_3 = self.attention_layer(c_processed, q_processed).outputs
-        att_context_cls = C.splice(att_1, att_2)
-        att_context_reg = C.splice(att_1, att_3)
+        att_context_cls, att_context_reg = self.attention_layer(c_processed, q_processed).outputs
 
         # modeling layer output:[#][2*hidden_dim] [#,c][2*hidden_dim]
-        mod_context_cls,  mod_context_reg= self.modeling_layer(att_context_cls, att_context_reg).outputs
-        mod_context_cls = C.sequence.last(mod_context_cls)
+        mod_cls_logits,  mod_context_reg= self.modeling_layer(att_context_cls, att_context_reg).outputs
 
-        # classify
-        cls_p = C.layers.Dense(1, activation=C.sigmoid)(mod_context_cls) # [#][1]
-        cls_res = C.greater(cls_p, C.constant(0.5))
         # output layer
         start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
 
         # loss
         # 负数
         slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
-        cons_1 = C.constant(1)
-        cls_loss = C.binary_cross_entropy(cls_p ,slc, name='classify')
+        cls_loss = C.binary_cross_entropy(mod_cls_logits,slc, name='classify')
         # span loss [#][1] + cls loss [#][1]
-        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc*C.constant(0.2) + C.constant(0.8)*cls_loss
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc + C.constant(10)*cls_loss
 
-        metric = C.classification_error(cls_res, slc)
-        res = C.combine([start_logits, end_logits, cls_p])
+        metric = C.classification_error(mod_cls_logits, slc)
+        res = C.combine([start_logits, end_logits, mod_cls_logits])
         res.as_numpy=False
-        return res, new_loss, metric
+        return res, cls_loss, metric
     def debug(self):
         c = C.Axis.new_unique_dynamic_axis('c')
         q = C.Axis.new_unique_dynamic_axis('q')
