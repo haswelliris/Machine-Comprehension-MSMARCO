@@ -110,13 +110,12 @@ def preprocess(s):
     return s.replace("''", '" ').replace("``", '" ')
 
 def tokenize(s, context_mode=False ):
-    nltk_tokens=[t.replace("''", '"').replace("``", '"') for t in nltk.word_tokenize(s)]
+    nltk_tokens=[t.replace("''", '"').replace("``", '"') for t in nltk.wordpunct_tokenize(s)]
     additional_separators = (
-             "-", "\u2212", "\u2014", "\u2013", "/", "~", '"', "'", "\u201C", "\u2019", "\u201D", "\u2018", "\u00B0")
+					"-", "\u2212", "\u2014", "\u2013", "/", "~", '"', "'", "\u201C", "\u2019", "\u201D", "\u2018", "\u00B0",',', '.', ':', ';', '?', '(', ')', '[', ']', '&', '!', '*', '@', '#', '$', '%')
     tokens = []
     for token in nltk_tokens:
-        tokens.extend([t for t in (re.split("([{}])".format("".join(additional_separators)), token)
-                                   if context_mode else [token])])
+        tokens.extend([t for t in (re.split("([{}])".format("".join(additional_separators)), token) if context_mode else [token])])
     assert(not any([t=='<NULL>' for t in tokens]))
     assert(not any([' ' in t for t in tokens]))
     assert (not any(['\t' in t for t in tokens]))

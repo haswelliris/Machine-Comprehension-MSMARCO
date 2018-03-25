@@ -13,6 +13,9 @@ tsvs = 'train', 'dev', 'test'
 unk = '<UNK>'
 pad = ''
 EMPTY_TOKEN = '<NULL>'
+START_TOKEN = '<s>'
+END_TOKEN = '</s>'
+
 # pad (or trim) to word_size characters
 pad_spec = '{0:<%d.%d}' % (word_size, word_size)
 
@@ -45,7 +48,7 @@ def populate_dicts(files):
         for line in f:
             word = line.split()[0].lower()
             if wdcnt[word] >= 1 or test_wdcnt[word] >= 1: # polymath adds word to dict regardless of word_count_threshold when it's in GloVe
-                _ = vocab[word]
+                    _ = vocab[word]
     known =len(vocab)
 
     # add the special markers
@@ -53,12 +56,13 @@ def populate_dicts(files):
     _ = vocab[unk]
     _ = chars[pad]
     _ = chars[unk]
+    _ = vocab[START_TOKEN]
+    _ = vocab[END_TOKEN]
 
     #finally add all words that are not in yet
     _  = [vocab[word] for word in wdcnt if word not in vocab and wdcnt[word] > word_count_threshold]
     _  = [chars[c]    for c    in chcnt if c    not in chars and chcnt[c]    > char_count_threshold]
-
-    # return as defaultdict(int) so that new keys will return 0 which is the value for <unknown>
+	# return as defaultdict(int) so that new keys will return 0 which is the value for <unknown>
     return known, defaultdict(int, vocab), defaultdict(int, chars)
 
 def tsv_iter(line, vocab, chars, is_test=False, misc={}):
