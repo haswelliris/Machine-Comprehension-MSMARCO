@@ -6,13 +6,16 @@ clone from `https://github.com/Microsoft/CNTK/tree/nikosk/bidaf/Examples/Text/Bi
 论文分析稍后给给出，该分支为对该代码的改进，及参数调整，以适合我们的机器环境
 ## 使用简介
 ### 预先准备训练数据
-自行复制训练所需数据集和单词编码集
+自行复制训练所需数据集和单词编码集，为了更好的效果，最好不要使用原代码给出的词向量和字符向量训练
 ```
-vocabs.pkl
-glove.6B.100d.txt
-dev.ctf
-test.ctf
-train.ctf
+词向量
+wget http://nlp.stanford.edu/data/glove.840B.300d.zip
+字符向量
+https://github.com/minimaxir/char-embeddings
+转化
+convert_msmarco.py
+ans_query2ctf.py (seq2seq模型训练用)
+tsv2ctf.py
 ```
 到script目录下
 ### 训练
