@@ -42,10 +42,10 @@ def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
     input_map = {
         argument_by_name(func, 'cgw'): mb_source.streams.context_g_words,
         argument_by_name(func, 'qgw'): mb_source.streams.query_g_words,
-        argument_by_name(func, 'cnw'): mb_source.streams.context_ng_words,
-        argument_by_name(func, 'qnw'): mb_source.streams.query_ng_words,
-        argument_by_name(func, 'cc' ): mb_source.streams.context_chars,
-        argument_by_name(func, 'qc' ): mb_source.streams.query_chars,
+        #argument_by_name(func, 'cnw'): mb_source.streams.context_ng_words,
+        #argument_by_name(func, 'qnw'): mb_source.streams.query_ng_words,
+        #argument_by_name(func, 'cc' ): mb_source.streams.context_chars,
+        #argument_by_name(func, 'qc' ): mb_source.streams.query_chars,
         #argument_by_name(func, 'ab' ): mb_source.streams.answer_begin,
         #argument_by_name(func, 'ae' ): mb_source.streams.answer_end,
         argument_by_name(func, 'sl'): mb_source.streams.is_selected
@@ -103,6 +103,7 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
                 yield {} # need to generate empty batch for distributed training
 import pprint
 #C.logging.set_trace_level(C.logging.TraceLevel.Info)
+C.debugging.set_checked_mode(True)
 def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
@@ -121,7 +122,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     tensorboard_logdir = os.path.join(data_path,training_config['logdir'],log_file)
 
     polymath = PolyMath(config_file)
-    z, loss, metric = polymath.model()
+    z, loss, metric = polymath.debug()
 
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']
@@ -242,7 +243,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                     data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
 
                 if epoch==0 and num_seq==0:
-                    res = model.eval(data)
+                    df ,res = loss.forward(data, [loss.output],set([loss.output]))
                     print('first eval:{}'.format(res))
                 #for k,v in data.items():
                 #    print('{}:{}'.format(k, v.data.shape))
