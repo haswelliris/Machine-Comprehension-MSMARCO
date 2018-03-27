@@ -169,13 +169,14 @@ def create_eval_model(s2smodel, embed_layer, is_test=False):
     labels = C.sequence.slice(q_onehot,1, 0) # <s> a b c </s> -> a b c </s>
 
     out_onehot = greedy_model(awk, awn, qwk, qwn)
-    print('greedy_model onehot out:{}'.format(out_onehot.output))
-    out_onehot = C.reconcile_dynamic_axes(out_onehot, labels)
-    loss = C.cross_entropy_with_softmax(out_onehot, labels)
-    errs = C.classification_error(out_onehot, labels)
+    out_onehot = C.sequence.unpack(out_onehot, 0, True) # no mask output
+    out_onehot_trunc = C.to_sequence_like(out_onehot, labels)
+    print('greedy_model onehot out:{}'.format(out_onehot_trunc.output))
+    loss = C.cross_entropy_with_softmax(out_onehot_trunc, labels)
+    errs = C.classification_error(out_onehot_trunc, labels)
     return input_ph, out_onehot, C.combine(loss, errs)
 
-def create_reader(filename, input_ph, config):
+def create_reader(filename, input_ph, config, is_test=False):
     '''
     return CTFReader
     '''
@@ -188,7 +189,7 @@ def create_reader(filename, input_ph, config):
                     awk = C.io.StreamDef('awk', shape=config['wg_dim'], is_sparse=True),
                     awn = C.io.StreamDef('awn', shape=config['wn_dim'], is_sparse=True)
                 )
-            ),randomize=True, max_sweeps=C.io.INFINITELY_REPEAT)
+            ),randomize=False if is_test else True, max_sweeps=5000 if is_test else C.io.INFINITELY_REPEAT)
     input_map = {
             input_ph['qwk']:mb_source.streams.qwk,
             input_ph['qwn']:mb_source.streams.qwn,
@@ -197,7 +198,7 @@ def create_reader(filename, input_ph, config):
             }
     return mb_source, input_map
 
-def train(config, model):
+def train(config, model, enable_eval=False):
     max_epoch = config['max_epoch']
     batchsize = config['batchsize']
     epoch_size = config['epoch_size']
@@ -210,8 +211,11 @@ def train(config, model):
     inp_ph ,train_model, loss_errs = create_train_model(model, embed_layer)
     train_reader, input_map = create_reader('aq_train.ctf', inp_ph, config)
 
-    inp_ph2, greedy_model, loss_errs2 = create_eval_model(model, embed_layer)
-    eval_reader, input_map2 = create_reader('aq_dev.ctf', inp_ph, config)
+    if enable_eval:
+        inp_ph2, greedy_model, loss_errs2 = create_eval_model(model, embed_layer)
+        eval_reader, input_map2 = create_reader('aq_dev.ctf', inp_ph, config, true)
+        evaluator = c.eval.evaluator(loss_errs2)
+        # i2w = get_i2w(vocabs)
 
     # create loggers
     progress_printer = C.logging.ProgressPrinter(freq=500, tag="Train")
@@ -241,9 +245,28 @@ def train(config, model):
             print('save {} in {}'.format(save_name, config['output_dir']))
             trainer.save_checkpoint('output/{}/{}'.format(config['output_dir'], save_name))
 
-def evaluate(model):
+            if enable_eval:
+                # vis_mb = eval_reader.next_minibatch(1, input_map=input_map2)
+                # oneh = greedy_model.eval(vis_mb)[0]
+                # res = visualize(oneh, i2w)
+                # print(res)
+                while True:
+                    mb_eval=eval_reader.next_minibatch(128, input_map=input_map2)
+                    if not mb_eval:
+                        break
+                    evaluator.test_minibatch(mb_eval)
+                evaluator.summarize_test_progress()
+
+def evaluate(s2smodel, visual=True):
     pass
+
+def get_i2w(vocab_dict):
+    return {v:k for k,v in vocab_dic.items()}
+def visualize(onehot, i2w):
+    ''' @onehot:numpy matrix @i2w: worddict'''
+    idx = [np.argmax(oo) for oo in onehot]
+    return [i2w[i] for i in idx]
 
 if __name__=='__main__':
     s2smodel = create_model()
-    train(myConfig, s2smodel)
+    create_eval_model(s2smodel, GloveEmbed())
