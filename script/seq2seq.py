@@ -8,6 +8,7 @@ known, vocabs, chars = pickle.load(open('vocabs.pkl','rb'))
 
 myConfig = {
         'save_name':'seq2seq',
+        'save_freq': 10000,
         'output_dir':'v1',
         'max_epoch':70000,
         'epoch_size': 20000,
@@ -103,10 +104,14 @@ def create_train_model(s2smodel, embed_layer):
     a_processed = embed_layer(awk, awn)
     q_processed = embed_layer(qwk, qwn)
     q_onehot = C.splice(qwk, qwn)
+    print("q_onehot shape:{}".format(q_onehot.output))
 
     logits = s2smodel(q_processed, a_processed)
+    logits = C.sequence.slice(logits, 0, -1)
+    print('logits shape:{}'.format(logits.output))
 
     labels = C.sequence.slice(q_onehot,1, 0) # <s> a b c </s> -> a b c </s>
+    print('labels shape:{}'.format(labels.output))
     logits = C.reconcile_dynamic_axes(logits, labels)
     loss = C.cross_entropy_with_softmax(logits, labels)
     errs = C.classification_error(logits, labels)
@@ -164,6 +169,7 @@ def create_eval_model(s2smodel, embed_layer, is_test=False):
     labels = C.sequence.slice(q_onehot,1, 0) # <s> a b c </s> -> a b c </s>
 
     out_onehot = greedy_model(awk, awn, qwk, qwn)
+    print('greedy_model onehot out:{}'.format(out_onehot.output))
     out_onehot = C.reconcile_dynamic_axes(out_onehot, labels)
     loss = C.cross_entropy_with_softmax(out_onehot, labels)
     errs = C.classification_error(out_onehot, labels)
@@ -196,6 +202,7 @@ def train(config, model):
     batchsize = config['batchsize']
     epoch_size = config['epoch_size']
     lr = config['lr']
+    save_freq = config['save_freq']
 
     # create models
     embed_layer = GloveEmbed()
@@ -207,15 +214,15 @@ def train(config, model):
     eval_reader, input_map2 = create_reader('aq_dev.ctf', inp_ph, config)
 
     # create loggers
-    progress_printer = C.logging.ProgressPrinter(freq=20, tag="Train")
-    tensorboard_writer = C.logging.TensorBoardProgressWriter(50, 'tensorlog', model=train_model)
+    progress_printer = C.logging.ProgressPrinter(freq=500, tag="Train")
+    tensorboard_writer = C.logging.TensorBoardProgressWriter(500, 'tensorlog', model=train_model)
 
     lrs = [(1, lr), (5000, lr*0.1), (10000,lr*0.01)]
     learner = C.fsadagrad(train_model.parameters,
          #apply the learning rate as if it is a minibatch of size 1
          lr = C.learning_parameter_schedule(lrs),
-         momentum = C.momentum_schedule(0.9366416204111472, minibatch_size=batchsize),
-         gradient_clipping_threshold_per_sample=2.3,
+         momentum = C.momentum_schedule(0.9, minibatch_size=batchsize),
+         gradient_clipping_threshold_per_sample=2,
          gradient_clipping_with_truncation=True)
 
     trainer = C.Trainer(train_model, loss_errs, [learner], [progress_printer, tensorboard_writer])
@@ -227,7 +234,7 @@ def train(config, model):
             mb_train = train_reader.next_minibatch(batchsize, input_map=input_map)
             # do the training
             trainer.train_minibatch(mb_train)
-            total_samples += mb_train[train_reader.streams.awk].num_samples
+            total_samples += mb_train[list(mb_train.keys())[0]].num_sequences
 
         if epoch+1 % save_freq == 0:
             save_name = '{}_{}.model'.format(config['save_name'], epoch+1)
