@@ -11,7 +11,7 @@ myConfig = {
         'save_freq': 10000,
         'output_dir':'v1',
         'max_epoch':70000,
-        'epoch_size': 20000,
+        'epoch_size': 25000, # total: 44961 sequences in v1
         'batchsize':256,
         'lr':0.1,
         'wg_dim':known,
@@ -221,7 +221,7 @@ def train(config, model, enable_eval=False):
     progress_printer = C.logging.ProgressPrinter(freq=500, tag="Train")
     tensorboard_writer = C.logging.TensorBoardProgressWriter(500, 'tensorlog', model=train_model)
 
-    lrs = [(1, lr), (5000, lr*0.1), (10000,lr*0.01)]
+    lrs = [(1, lr), (5000, lr*0.1), (10000,lr*0.01), (30000, lr*0.001)]
     learner = C.fsadagrad(train_model.parameters,
          #apply the learning rate as if it is a minibatch of size 1
          lr = C.learning_parameter_schedule(lrs),
@@ -238,7 +238,10 @@ def train(config, model, enable_eval=False):
             mb_train = train_reader.next_minibatch(batchsize, input_map=input_map)
             # do the training
             trainer.train_minibatch(mb_train)
-            total_samples += mb_train[list(mb_train.keys())[0]].num_sequences
+            # total_samples += mb_train[list(mb_train.keys())[0]].num_sequences
+            total_samples += trainer.total_number_of_samples_seen
+
+        trainer.summarize_training_progress()
 
         if epoch+1 % save_freq == 0:
             save_name = '{}_{}.model'.format(config['save_name'], epoch+1)
@@ -267,6 +270,13 @@ def visualize(onehot, i2w):
     idx = [np.argmax(oo) for oo in onehot]
     return [i2w[i] for i in idx]
 
+C.cntk_py.set_gpumemory_allocation_trace_level(1)
 if __name__=='__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--gpu',help='specify gpu id', default=0, type=int)
+
+    args = parser.parse_args()
+    C.try_set_default_device(C.gpu(args.gpu))
+
     s2smodel = create_model()
     create_eval_model(s2smodel, GloveEmbed())

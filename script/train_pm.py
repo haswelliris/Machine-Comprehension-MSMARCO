@@ -420,7 +420,7 @@ if __name__=='__main__':
         model_path = args['outputdir'] + "/models"
     if args['datadir'] is not None:
         data_path = args['datadir']
-        
+
     #C.try_set_default_device(C.gpu(0))
 
     test_data = args['test']
