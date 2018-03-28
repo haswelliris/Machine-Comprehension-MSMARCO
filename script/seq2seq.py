@@ -3,6 +3,7 @@ from cntk.layers import *
 
 import pickle
 import numpy as np
+import argparse
 
 known, vocabs, chars = pickle.load(open('vocabs.pkl','rb'))
 
@@ -12,7 +13,7 @@ myConfig = {
         'output_dir':'v1',
         'max_epoch':70000,
         'epoch_size': 25000, # total: 44961 sequences in v1
-        'batchsize':256,
+        'batchsize':128,
         'lr':0.1,
         'wg_dim':known,
         'wn_dim':len(vocabs)-known,
@@ -101,6 +102,11 @@ def create_train_model(s2smodel, embed_layer):
     awn = C.sequence.input_variable(myConfig['wn_dim'], sequence_axis = a, is_sparse = False, name='awn')
 
     input_ph = {'qwk':qwk,'qwn':qwn,'awk':awk,'awn':awn}
+    #I = C.Constant(np.eye(myConfig['wg_dim']))
+    #I2 = C.Constant(np.eye(myConfig['wn_dim']))
+
+    #awkd, awnd = C.times(awk, I), C.times(awn, I2)
+    #qwkd, qwnd = C.times(qwk, I), C.times(qwn, I2)
     a_processed = embed_layer(awk, awn)
     q_processed = embed_layer(qwk, qwn)
     q_onehot = C.splice(qwk, qwn)
@@ -164,7 +170,11 @@ def create_eval_model(s2smodel, embed_layer, is_test=False):
         out_onehot = unfold(sentence_start, a_processed)
         return out_onehot
 
+    #I = C.Constant(np.eye(myConfig['wg_dim']))
+    #I2 = C.Constant(np.eye(myConfig['wn_dim']))
 
+    #awkd, awnd = C.times(awk, I), C.times(awn, I)
+    #qwkd, qwnd = C.times(qwk, I), C.times(qwn, I)
     q_onehot = C.splice(qwk, qwn)
     labels = C.sequence.slice(q_onehot,1, 0) # <s> a b c </s> -> a b c </s>
 
@@ -213,8 +223,8 @@ def train(config, model, enable_eval=False):
 
     if enable_eval:
         inp_ph2, greedy_model, loss_errs2 = create_eval_model(model, embed_layer)
-        eval_reader, input_map2 = create_reader('aq_dev.ctf', inp_ph, config, true)
-        evaluator = c.eval.evaluator(loss_errs2)
+        eval_reader, input_map2 = create_reader('aq_dev.ctf', inp_ph, config, True)
+        evaluator = C.eval.Evaluator(loss_errs2.outputs[0])
         # i2w = get_i2w(vocabs)
 
     # create loggers
@@ -238,8 +248,8 @@ def train(config, model, enable_eval=False):
             mb_train = train_reader.next_minibatch(batchsize, input_map=input_map)
             # do the training
             trainer.train_minibatch(mb_train)
-            # total_samples += mb_train[list(mb_train.keys())[0]].num_sequences
-            total_samples += trainer.total_number_of_samples_seen
+            total_samples += mb_train[list(mb_train.keys())[0]].num_sequences
+            # total_samples += trainer.total_number_of_samples_seen
 
         trainer.summarize_training_progress()
 
@@ -270,7 +280,7 @@ def visualize(onehot, i2w):
     idx = [np.argmax(oo) for oo in onehot]
     return [i2w[i] for i in idx]
 
-C.cntk_py.set_gpumemory_allocation_trace_level(1)
+C.cntk_py.set_gpumemory_allocation_trace_level(0)
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu',help='specify gpu id', default=0, type=int)
@@ -279,4 +289,4 @@ if __name__=='__main__':
     C.try_set_default_device(C.gpu(args.gpu))
 
     s2smodel = create_model()
-    create_eval_model(s2smodel, GloveEmbed())
+    train(myConfig ,s2smodel, True)
