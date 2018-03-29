@@ -9,11 +9,11 @@ known, vocabs, chars = pickle.load(open('vocabs.pkl','rb'))
 
 myConfig = {
         'save_name':'seq2seq',
-        'save_freq': 10000,
+        'save_freq': 100,
         'output_dir':'v1',
-        'max_epoch':70000,
-        'epoch_size': 25000, # total: 44961 sequences in v1
-        'batchsize':128,
+        'max_epoch':7000,
+        'epoch_size': 30000, # total: 44961 sequences in v1
+        'batchsize':256,
         'lr':0.1,
         'wg_dim':known,
         'wn_dim':len(vocabs)-known,
@@ -102,21 +102,18 @@ def create_train_model(s2smodel, embed_layer):
     awn = C.sequence.input_variable(myConfig['wn_dim'], sequence_axis = a, is_sparse = False, name='awn')
 
     input_ph = {'qwk':qwk,'qwn':qwn,'awk':awk,'awn':awn}
-    #I = C.Constant(np.eye(myConfig['wg_dim']))
-    #I2 = C.Constant(np.eye(myConfig['wn_dim']))
-
-    #awkd, awnd = C.times(awk, I), C.times(awn, I2)
-    #qwkd, qwnd = C.times(qwk, I), C.times(qwn, I2)
+ 
     a_processed = embed_layer(awk, awn)
     q_processed = embed_layer(qwk, qwn)
-    q_onehot = C.splice(qwk, qwn)
-    print("q_onehot shape:{}".format(q_onehot.output))
+    a_onehot = C.splice(awk, awn)
+    print("q_onehot shape:{}".format(a_onehot.output))
 
-    logits = s2smodel(q_processed, a_processed)
+    # query generate answer
+    logits = s2smodel(a_processed, q_processed)
     logits = C.sequence.slice(logits, 0, -1)
     print('logits shape:{}'.format(logits.output))
 
-    labels = C.sequence.slice(q_onehot,1, 0) # <s> a b c </s> -> a b c </s>
+    labels = C.sequence.slice(a_onehot,1, 0) # <s> a b c </s> -> a b c </s>
     print('labels shape:{}'.format(labels.output))
     logits = C.reconcile_dynamic_axes(logits, labels)
     loss = C.cross_entropy_with_softmax(logits, labels)
@@ -151,8 +148,8 @@ def create_eval_model(s2smodel, embed_layer, is_test=False):
 
     @C.Function
     def greedy_model(aawk, aawn, qqwk, qqwn):
-        q_onehot = C.splice(qqwk, qqwn)
-        sentence_start = C.sequence.slice(q_onehot, 0, 1)
+        a_onehot = C.splice(aawk, aawn)
+        sentence_start = C.sequence.slice(a_onehot, 0, 1)
 
         @C.Function
         def process_history(hist, inp):
@@ -163,20 +160,15 @@ def create_eval_model(s2smodel, embed_layer, is_test=False):
             hamax = C.hardmax(out_logits)
             return hamax
 
-        a_processed = embed_layer(aawk, aawn)
-        unfold = UnfoldFrom(lambda history: process_history(history, a_processed),
+        q_processed = embed_layer(qqwk, qqwn)
+        unfold = UnfoldFrom(lambda history: process_history(history, q_processed),
                 until_predicate=lambda w:w[:sentence_end_index],
                 length_increase=1.5)
-        out_onehot = unfold(sentence_start, a_processed)
+        out_onehot = unfold(sentence_start, q_processed)
         return out_onehot
 
-    #I = C.Constant(np.eye(myConfig['wg_dim']))
-    #I2 = C.Constant(np.eye(myConfig['wn_dim']))
-
-    #awkd, awnd = C.times(awk, I), C.times(awn, I)
-    #qwkd, qwnd = C.times(qwk, I), C.times(qwn, I)
-    q_onehot = C.splice(qwk, qwn)
-    labels = C.sequence.slice(q_onehot,1, 0) # <s> a b c </s> -> a b c </s>
+    a_onehot = C.splice(awk, awn)
+    labels = C.sequence.slice(a_onehot,1, 0) # <s> a b c </s> -> a b c </s>
 
     out_onehot = greedy_model(awk, awn, qwk, qwn)
     out_onehot = C.sequence.unpack(out_onehot, 0, True) # no mask output
@@ -258,17 +250,17 @@ def train(config, model, enable_eval=False):
             print('save {} in {}'.format(save_name, config['output_dir']))
             trainer.save_checkpoint('output/{}/{}'.format(config['output_dir'], save_name))
 
-            if enable_eval:
-                # vis_mb = eval_reader.next_minibatch(1, input_map=input_map2)
-                # oneh = greedy_model.eval(vis_mb)[0]
-                # res = visualize(oneh, i2w)
-                # print(res)
-                while True:
-                    mb_eval=eval_reader.next_minibatch(128, input_map=input_map2)
-                    if not mb_eval:
-                        break
-                    evaluator.test_minibatch(mb_eval)
-                evaluator.summarize_test_progress()
+        if enable_eval:
+            # vis_mb = eval_reader.next_minibatch(1, input_map=input_map2)
+            # oneh = greedy_model.eval(vis_mb)[0]
+            res = visualize(oneh, i2w)
+            # print(res)
+            while True:
+                mb_eval=eval_reader.next_minibatch(128, input_map=input_map2)
+                if not mb_eval:
+                    break
+                evaluator.test_minibatch(mb_eval)
+            evaluator.summarize_test_progress()
 
 def evaluate(s2smodel, visual=True):
     pass
