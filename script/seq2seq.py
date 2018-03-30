@@ -252,13 +252,16 @@ def train(config, model, enable_eval=False):
             print("predict res: {}".format(res))
             res = visualize(gt, i2w)
             print("ground truth: {}".format(res))
+            pres = 0.0; count = 1
             while True:
-                mb_eval=eval_reader.next_minibatch(2048, input_map=input_map2)
+                mb_eval=eval_reader.next_minibatch(128, input_map=input_map2)
                 pred = pred_sym.eval(mb_eval)
                 gt = gt_sym.eval(mb_eval)
-                report_classification_info(pred, gt)
+                pres += report_classification_info(pred, gt)
+                count += 1
                 if not mb_eval:
                     break
+            print('average precision:{}'.format(pres/count))
 
 
 def evaluate(s2smodel, visual=True):
@@ -289,7 +292,8 @@ def report_classification_info(preds, gts):
         avg_pres += pres
         # print('[FUNCTION] report: precision:{}'.format(pres))
 
-    print('[FUNCTION] report: average precision:{}'.format(avg_pres/len(gts)))
+    # print('[FUNCTION] report: average precision:{}'.format(avg_pres/len(gts)))
+    return avg_pres/len(gts)
 
 C.cntk_py.set_gpumemory_allocation_trace_level(0)
 if __name__=='__main__':
