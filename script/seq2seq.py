@@ -148,8 +148,8 @@ def create_eval_model(s2smodel, embed_layer, is_test=False):
 
     @C.Function
     def greedy_model(aawk, aawn, qqwk, qqwn):
-        a_onehot = C.splice(aawk, aawn)
-        sentence_start = C.sequence.slice(a_onehot, 0, 1)
+        a_oneh = C.splice(aawk, aawn)
+        sentence_start = C.sequence.slice(a_oneh, 0, 1)
 
         @C.Function
         def process_history(hist, inp):
@@ -157,12 +157,12 @@ def create_eval_model(s2smodel, embed_layer, is_test=False):
             wn = hist[myConfig['wg_dim']:]
             hist_processed = embed_layer(wk, wn)
             out_logits = s2smodel(hist_processed, inp)
-            hamax = C.hardmax(out_logits)
+            hamax = C.reshape(C.hardmax(out_logits),(-1,))
             return hamax
 
         q_processed = embed_layer(qqwk, qqwn)
         unfold = UnfoldFrom(lambda history: process_history(history, q_processed),
-                until_predicate=lambda w:w[:sentence_end_index],
+                until_predicate=lambda w:w[...,sentence_end_index],
                 length_increase=1.5)
         out_onehot = unfold(sentence_start, q_processed)
         return out_onehot
@@ -171,12 +171,8 @@ def create_eval_model(s2smodel, embed_layer, is_test=False):
     labels = C.sequence.slice(a_onehot,1, 0) # <s> a b c </s> -> a b c </s>
 
     out_onehot = greedy_model(awk, awn, qwk, qwn)
-    out_onehot = C.sequence.unpack(out_onehot, 0, True) # no mask output
-    out_onehot_trunc = C.to_sequence_like(out_onehot, labels)
-    print('greedy_model onehot out:{}'.format(out_onehot_trunc.output))
-    loss = C.cross_entropy_with_softmax(out_onehot_trunc, labels)
-    errs = C.classification_error(out_onehot_trunc, labels)
-    return input_ph, out_onehot, C.combine(loss, errs)
+    print('greedy_model onehot out:{}'.format(out_onehot.output))
+    return input_ph, out_onehot, labels
 
 def create_reader(filename, input_ph, config, is_test=False):
     '''
@@ -214,10 +210,9 @@ def train(config, model, enable_eval=False):
     train_reader, input_map = create_reader('aq_train.ctf', inp_ph, config)
 
     if enable_eval:
-        inp_ph2, greedy_model, loss_errs2 = create_eval_model(model, embed_layer)
-        eval_reader, input_map2 = create_reader('aq_dev.ctf', inp_ph, config, True)
-        evaluator = C.eval.Evaluator(loss_errs2.outputs[0])
-        # i2w = get_i2w(vocabs)
+        inp_ph2, pred_sym, gt_sym = create_eval_model(model, embed_layer)
+        eval_reader, input_map2 = create_reader('aq_dev.ctf', inp_ph2, config, True)
+        i2w = get_i2w(vocabs)
 
     # create loggers
     progress_printer = C.logging.ProgressPrinter(freq=500, tag="Train")
@@ -241,7 +236,6 @@ def train(config, model, enable_eval=False):
             # do the training
             trainer.train_minibatch(mb_train)
             total_samples += mb_train[list(mb_train.keys())[0]].num_sequences
-            # total_samples += trainer.total_number_of_samples_seen
 
         trainer.summarize_training_progress()
 
@@ -249,28 +243,53 @@ def train(config, model, enable_eval=False):
             save_name = '{}_{}.model'.format(config['save_name'], epoch+1)
             print('save {} in {}'.format(save_name, config['output_dir']))
             trainer.save_checkpoint('output/{}/{}'.format(config['output_dir'], save_name))
-
         if enable_eval:
-            # vis_mb = eval_reader.next_minibatch(1, input_map=input_map2)
-            # oneh = greedy_model.eval(vis_mb)[0]
-            res = visualize(oneh, i2w)
-            # print(res)
+            vis_mb = eval_reader.next_minibatch(1, input_map=input_map2)
+            pred = pred_sym.eval(vis_mb)[0]
+            gt = gt_sym.eval(vis_mb)[0]
+            print(pred.shape, gt.shape)
+            res = visualize(pred, i2w)
+            print("predict res: {}".format(res))
+            res = visualize(gt, i2w)
+            print("ground truth: {}".format(res))
             while True:
-                mb_eval=eval_reader.next_minibatch(128, input_map=input_map2)
+                mb_eval=eval_reader.next_minibatch(2048, input_map=input_map2)
+                pred = pred_sym.eval(mb_eval)
+                gt = gt_sym.eval(mb_eval)
+                report_classification_info(pred, gt)
                 if not mb_eval:
                     break
-                evaluator.test_minibatch(mb_eval)
-            evaluator.summarize_test_progress()
+
 
 def evaluate(s2smodel, visual=True):
     pass
 
 def get_i2w(vocab_dict):
-    return {v:k for k,v in vocab_dic.items()}
+    return {v:k for k,v in vocab_dict.items()}
 def visualize(onehot, i2w):
     ''' @onehot:numpy matrix @i2w: worddict'''
     idx = [np.argmax(oo) for oo in onehot]
+    print('[FUNCTION] visualize:{}'.format(idx))
     return [i2w[i] for i in idx]
+def report_classification_info(preds, gts):
+    ''' @preds:onehot [batch*sequence*vocabs] '''
+    avg_pres = 0.0
+    for pp, gg in zip(preds, gts):
+        p_len, voc_len = pp.shape
+        g_len = gg.shape[0]
+        if p_len>=g_len:
+            pp = pp[:g_len]
+        else:
+            pad = np.zeros((g_len-p_len, voc_len))
+            pp = np.vstack((pp, pad))
+        labels = np.argmax(gg, axis=1).flatten()
+        pred = np.argmax(pp, axis=1).flatten()
+        # print('[FUNCTION] report: labels:{}, pred:{}'.format(labels, pred))
+        pres = len(labels[labels==pred])/g_len
+        avg_pres += pres
+        # print('[FUNCTION] report: precision:{}'.format(pres))
+
+    print('[FUNCTION] report: average precision:{}'.format(avg_pres/len(gts)))
 
 C.cntk_py.set_gpumemory_allocation_trace_level(0)
 if __name__=='__main__':
