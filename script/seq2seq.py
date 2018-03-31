@@ -196,7 +196,7 @@ def create_reader(filename, input_ph, config, is_test=False):
             }
     return mb_source, input_map
 
-def train(config, model, enable_eval=False):
+def train(config, model, args, enable_eval=False):
     max_epoch = config['max_epoch']
     batchsize = config['batchsize']
     epoch_size = config['epoch_size']
@@ -216,7 +216,7 @@ def train(config, model, enable_eval=False):
 
     # create loggers
     progress_printer = C.logging.ProgressPrinter(freq=500, tag="Train")
-    tensorboard_writer = C.logging.TensorBoardProgressWriter(500, 'tensorlog', model=train_model)
+    tensorboard_writer = C.logging.TensorBoardProgressWriter(500, 'tensorlog/{}'.format(args.tensorboard), model=train_model)
 
     lrs = [(1, lr), (5000, lr*0.1), (10000,lr*0.01), (30000, lr*0.001)]
     learner = C.fsadagrad(train_model.parameters,
@@ -243,6 +243,7 @@ def train(config, model, enable_eval=False):
             save_name = '{}_{}.model'.format(config['save_name'], epoch+1)
             print('save {} in {}'.format(save_name, config['output_dir']))
             trainer.save_checkpoint('output/{}/{}'.format(config['output_dir'], save_name))
+
         if enable_eval:
             vis_mb = eval_reader.next_minibatch(1, input_map=input_map2)
             pred = pred_sym.eval(vis_mb)[0]
@@ -253,8 +254,8 @@ def train(config, model, enable_eval=False):
             res = visualize(gt, i2w)
             print("ground truth: {}".format(res))
             pres = 0.0; count = 1
-            while True:
-                mb_eval=eval_reader.next_minibatch(128, input_map=input_map2)
+            while count<5:
+                mb_eval=eval_reader.next_minibatch(512, input_map=input_map2)
                 pred = pred_sym.eval(mb_eval)
                 gt = gt_sym.eval(mb_eval)
                 pres += report_classification_info(pred, gt)
@@ -296,12 +297,14 @@ def report_classification_info(preds, gts):
     return avg_pres/len(gts)
 
 C.cntk_py.set_gpumemory_allocation_trace_level(0)
+C.logging.set_trace_level(C.logging.TraceLevel.Error)
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu',help='specify gpu id', default=0, type=int)
+    parser.add_argument('--tensorboard', help='tensorboard directory',type=str,default='.')
 
     args = parser.parse_args()
     C.try_set_default_device(C.gpu(args.gpu))
 
     s2smodel = create_model()
-    train(myConfig ,s2smodel, True)
+    train(myConfig ,s2smodel, args, True)
