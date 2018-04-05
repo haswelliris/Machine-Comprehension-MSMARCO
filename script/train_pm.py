@@ -10,9 +10,6 @@ import importlib
 import time
 import json
 
-model_name = "pm.model"
-log_file_name = 'default_output'
-
 def argument_by_name(func, name):
     found = [arg for arg in func.arguments if arg.name == name]
     if len(found) == 0:
@@ -21,8 +18,23 @@ def argument_by_name(func, name):
         raise ValueError('multiple matching names in arguments')
     else:
         return found[0]
+def get_input_variables(func):
+    return {'cnw': argument_by_name(func,'cnw'),
+            'qnw': argument_by_name(func,'qnw'),
+            'cgw': argument_by_name(func,'cgw'),
+            'qgw': argument_by_name(func,'qgw'),
+            'cc':argument_by_name(func, 'cc'),
+            'qc':argument_by_name(func,'qc'),
+            'ab':argument_by_name(func,'ab'),
+            'ae':argument_by_name(func,'ae'),
+    }
 
-def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
+def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=True):
+    '''
+    @input_phs dict {'name':input placeholder}
+    @data_file str
+    @polymath model instance
+    '''
     mb_source = C.io.MinibatchSource(
         C.io.CTFDeserializer(
             data_file,
@@ -39,18 +51,18 @@ def create_mb_and_map(func, data_file, polymath, randomize=True, repeat=True):
         max_sweeps=C.io.INFINITELY_REPEAT if repeat else 1)
 
     input_map = {
-        argument_by_name(func, 'cgw'): mb_source.streams.context_g_words,
-        argument_by_name(func, 'qgw'): mb_source.streams.query_g_words,
-        argument_by_name(func, 'cnw'): mb_source.streams.context_ng_words,
-        argument_by_name(func, 'qnw'): mb_source.streams.query_ng_words,
-        argument_by_name(func, 'cc' ): mb_source.streams.context_chars,
-        argument_by_name(func, 'qc' ): mb_source.streams.query_chars,
-        argument_by_name(func, 'ab' ): mb_source.streams.answer_begin,
-        argument_by_name(func, 'ae' ): mb_source.streams.answer_end
+        input_phs['cgw']: mb_source.streams.context_g_words,
+        input_phs['qgw']: mb_source.streams.query_g_words,
+        input_phs['cnw']: mb_source.streams.context_ng_words,
+        input_phs['qnw']: mb_source.streams.query_ng_words,
+        input_phs['cc']: mb_source.streams.context_chars,
+        input_phs['qc']: mb_source.streams.query_chars,
+        input_phs['ab']: mb_source.streams.answer_begin,
+        input_phs['ae']: mb_source.streams.answer_end
     }
     return mb_source, input_map
 
-def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False, misc=None):
+def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=False, misc=None):
     with open(tsv_file, 'r', encoding='utf-8') as f:
         eof = False
         batch_count = 0
@@ -87,18 +99,18 @@ def create_tsv_reader(func, tsv_file, polymath, seqs, num_workers, is_test=False
                 answer_begin = [np.asarray(ab, dtype=np.float32) for ab in batch['baidx']]
                 answer_end   = [np.asarray(ae, dtype=np.float32) for ae in batch['eaidx']]
 
-                yield { argument_by_name(func, 'cgw'): context_g_words,
-                        argument_by_name(func, 'qgw'): query_g_words,
-                        argument_by_name(func, 'cnw'): context_ng_words,
-                        argument_by_name(func, 'qnw'): query_ng_words,
-                        argument_by_name(func, 'cc' ): context_chars,
-                        argument_by_name(func, 'qc' ): query_chars,
-                        argument_by_name(func, 'ab' ): answer_begin,
-                        argument_by_name(func, 'ae' ): answer_end }
+                yield {  input_phs['cgw']:context_g_words,
+                         input_phs['qgw']:query_g_words,
+                         input_phs['cnw']:context_ng_words,
+                         input_phs['qnw']:query_ng_words,
+                         input_phs['cc']:context_chars,
+                         input_phs['qc']:query_chars,
+                         input_phs['ab']:answer_begin,
+                         input_phs['ae']:answer_end }
             else:
                 yield {} # need to generate empty batch for distributed training
 from pprint import pprint
-def train(data_path, model_path, log_file, config_file, restore=False, profiling=False, gen_heartbeat=False):
+def train(data_path, model_path, log_file, config_file, model_name, restore=False, profiling=False, gen_heartbeat=False, gpu=0):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
     if training_config['multi_gpu']:
@@ -109,14 +121,18 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         print("rank = "+str(my_rank)+", using gpu "+str(my_gpu_id)+" of "+str(gpu_cnt))
         C.try_set_default_device(C.gpu(my_gpu_id))
     else:
-        C.try_set_default_device(C.gpu(0))
-    # outputs while training
-    normal_log = os.path.join(data_path,training_config['logdir'],log_file)
-    # tensorboard files' dir
-    tensorboard_logdir = os.path.join(data_path,training_config['logdir'],log_file)
+        C.try_set_default_device(C.gpu(gpu))
 
+    # directories
+    normal_log = os.path.join(data_path,training_config['logdir'],log_file)
+    tensorboard_logdir = os.path.join(data_path,training_config['logdir'],log_file)
+    train_data_file = os.path.join(data_path, training_config['train_data'])
+    train_data_ext = os.path.splitext(train_data_file)[-1].lower()
+    model_file = os.path.join(model_path, model_name)
+
+    # training setting
     polymath = PolyMath(config_file)
-    z, loss = polymath.model()
+    z, loss, input_phs = polymath.model()
 
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']
@@ -130,23 +146,18 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
                             gen_heartbeat = gen_heartbeat)]
     # add tensorboard writer for visualize
     tensorboard_writer = C.logging.TensorBoardProgressWriter(
-                             freq=10,
+                             freq=training_config['tensorboard_freq'],
                              log_dir=tensorboard_logdir,
                              rank = C.Communicator.rank(),
                              model = z)
     progress_writers.append(tensorboard_writer)
 
-    lr = C.learning_parameter_schedule(training_config['lr'], minibatch_size=None, epoch_size=None)
-
-    ema = {}
-    dummies_info = {}
-    dummies = []
-    for p in z.parameters:
-        ema_p = C.constant(0, shape=p.shape, dtype=p.dtype, name='ema_%s' % p.uid)
-        ema[p.uid] = ema_p 
-        dummies.append(C.reduce_sum(C.assign(ema_p, p)))
-        dummies_info[dummies[-1].output] = (p.name, p.shape)
-    dummy = C.combine(dummies)
+    lr_set = training_config['lr']
+    if training_config['decay']:
+        rate = training_config['decay']['rate']
+        epoch = training_config['decay']['epoch']
+        lr_set= [(e,(rate**i)*lr_set) for i,e in enumerate(range(1, max_epochs, epoch))]
+    lr = C.learning_parameter_schedule(lr_set, minibatch_size=None, epoch_size=None)
 
     learner = C.adadelta(z.parameters, lr)
 
@@ -158,55 +169,29 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
     if profiling:
         C.debugging.start_profiler(sync_gpu=True)
 
-    train_data_file = os.path.join(data_path, training_config['train_data'])
-    train_data_ext = os.path.splitext(train_data_file)[-1].lower()
-
-    model_file = os.path.join(model_path, model_name)
     model = C.combine(list(z.outputs) + [loss.output])
-    label_ab = argument_by_name(loss, 'ab')
-
+    # record
     epoch_stat = {
         'best_val_err' : 100,
         'best_since'   : 0,
         'val_since'    : 0,
-        'record_num'   : 0}
+        'record_num'   : 0,
+        'epoch':0}
 
-    if restore and os.path.isfile(model_file):
-        trainer.restore_from_checkpoint(model_file)
+    if restore and os.path.isfile(model_file+'.ckp'):
+        trainer.restore_from_checkpoint(model_file+'.ckp')
         #after restore always re-evaluate
-        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
+        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), polymath,config_file)
 
     def post_epoch_work(epoch_stat):
-        trainer.summarize_training_progress()
         epoch_stat['val_since'] += 1
 
         if epoch_stat['val_since'] == training_config['val_interval']:
             epoch_stat['val_since'] = 0
-            temp = dict((p.uid, p.value) for p in z.parameters)
-            for p in trainer.model.parameters:
-                p.value = ema[p.uid].value
-            val_err = validate_model(os.path.join(data_path, training_config['val_data']), model, polymath,config_file)
+            val_err = validate_model(os.path.join(data_path, training_config['val_data']),polymath,config_file)
             if epoch_stat['best_val_err'] > val_err:
                 epoch_stat['best_val_err'] = val_err
                 epoch_stat['best_since'] = 0
-                os.system("ls -la >> log.log")
-                os.system("ls -la ./Models >> log.log")
-                save_flag = True
-                fail_cnt = 0
-                while save_flag:
-                    if fail_cnt > 100:
-                        print("ERROR: failed to save models")
-                        break
-                    try:
-                        trainer.save_checkpoint(model_file)
-                        epoch_stat['record_num']+=1
-                        record_file = os.path.join(model_path,str(epoch_stat['record_num'])+'-'+model_name)
-                        trainer.save_checkpoint(record_file)
-                        save_flag = False
-                    except:
-                        fail_cnt = fail_cnt + 1
-                for p in trainer.model.parameters:
-                    p.value = temp[p.uid]
             else:
                 epoch_stat['best_since'] += 1
                 if epoch_stat['best_since'] > training_config['stop_after']:
@@ -218,7 +203,7 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         return True
 
     if train_data_ext == '.ctf':
-        mb_source, input_map = create_mb_and_map(loss, train_data_file, polymath)
+        mb_source, input_map = create_mb_and_map(input_phs, train_data_file, polymath)
 
         minibatch_size = training_config['minibatch_size'] # number of samples
         epoch_size = training_config['epoch_size']
@@ -233,10 +218,15 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
 
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
-                # print_para_info(dummy, dummies_info)
                 if num_seq >= epoch_size:
                     break
+            trainer.summarize_training_progress()
+            if epoch+1 % training_config['save_freq']==0:
+                save_name = os.path.join(model_path,'{}_{}.ckp'.format(model_name,epoch))
+                print('[TRAIN] save checkpoint into {}'.format(save_name))
+                trainer.save_checkpoint(save_name)
             if not post_epoch_work(epoch_stat):
+                epoch_stat['epoch'] = epoch
                 break
     else:
         if train_data_ext != '.tsv':
@@ -245,40 +235,55 @@ def train(data_path, model_path, log_file, config_file, restore=False, profiling
         minibatch_seqs = training_config['minibatch_seqs'] # number of sequences
 
         for epoch in range(max_epochs):       # loop over epochs
-            tsv_reader = create_tsv_reader(loss, train_data_file, polymath, minibatch_seqs, C.Communicator.num_workers())
+            tsv_reader = create_tsv_reader(input_phs, train_data_file, polymath, minibatch_seqs, C.Communicator.num_workers())
             minibatch_count = 0
             for data in tsv_reader:
                 if (minibatch_count % C.Communicator.num_workers()) == C.Communicator.rank():
                     trainer.train_minibatch(data) # update model with it
-                    dummy.eval()
                 minibatch_count += 1
+            trainer.summarize_training_progress()
+            if epoch+1 % training_config['save_freq']==0:
+                save_name = os.path.join(model_path,'{}_{}.ckp'.format(model_name,epoch))
+                print('[TRAIN] save checkpoint into {}'.format(save_name))
+                trainer.save_checkpoint(save_name)
             if not post_epoch_work(epoch_stat):
+                epoch_stat['epoch'] = epoch
                 break
 
     if profiling:
         C.debugging.stop_profiler()
+    
+    print('[TRAIN] training finish after {} epochs'.format(epoch_stat['epoch']))
+    save_name = os.path.join(model_path, model_name.split('_')[0])
+    print('[TRAIN] save final model as {}.model'.format(save_name))
+    model.save(model_file+'.model')
 
 def symbolic_best_span(begin, end):
     running_max_begin = C.layers.Recurrence(C.element_max, initial_state=-float("inf"))(begin)
     return C.layers.Fold(C.element_max, initial_state=C.constant(-1e+30))(running_max_begin + end)
 
-def validate_model(test_data, model, polymath,config_file):
+def validate_model(test_data, polymath,config_file):
     print("start validate")
+    model = polymath.model
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
-    loss         = model.outputs[2]
-    root = C.as_composite(loss.owner)
-    mb_source, input_map = create_mb_and_map(root, test_data, polymath, randomize=False, repeat=False)
-    begin_label = argument_by_name(root, 'ab')
-    end_label   = argument_by_name(root, 'ae')
+    loss         = polymath.loss 
+    input_phs = polymath.input_phs
+    mb_source, input_map = create_mb_and_map(input_phs, test_data, polymath, randomize=False, repeat=False)
+    begin_label = input_phs['ab']
+    end_label   = input_phs['ae']
 
+    # input placeholder of 2 usage
     begin_prediction = C.sequence.input_variable(1, sequence_axis=begin_label.dynamic_axes[1], needs_gradient=True)
     end_prediction = C.sequence.input_variable(1, sequence_axis=end_label.dynamic_axes[1], needs_gradient=True)
 
+    # max position has gradient 1
     best_span_score = symbolic_best_span(begin_prediction, end_prediction)
+    # mark span with 1 sequence:[0000111111100000]
     predicted_span = C.layers.Recurrence(C.plus)(begin_prediction - C.sequence.past_value(end_prediction))
     true_span = C.layers.Recurrence(C.plus)(begin_label - C.sequence.past_value(end_label))
     common_span = C.element_min(predicted_span, true_span)
+    # if match
     begin_match = C.sequence.reduce_sum(C.element_min(begin_prediction, begin_label))
     end_match = C.sequence.reduce_sum(C.element_min(end_prediction, end_label))
 
@@ -351,7 +356,7 @@ def get_answer(raw_text, tokens, start, end):
         import pdb
         pdb.set_trace()
 
-def test(test_data, model_path, model_file, config_file):
+def test(test_data, model_path, model_file, config_file, gpu=0):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
     if training_config['multi_gpu']:
@@ -362,9 +367,9 @@ def test(test_data, model_path, model_file, config_file):
         print("rank = "+str(my_rank)+", using gpu "+str(my_gpu_id)+" of "+str(gpu_cnt))
         C.try_set_default_device(C.gpu(my_gpu_id))
     else:
-        C.try_set_default_device(C.gpu(0))
+        C.try_set_default_device(C.gpu(gpu))
     polymath = PolyMath(config_file)
-    model = C.load_model(os.path.join(model_path, model_file if model_file else model_name))
+    model = C.load_model(os.path.join(model_path, model_file))
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
     loss         = C.as_composite(model.outputs[2].owner)
@@ -375,11 +380,12 @@ def test(test_data, model_path, model_file, config_file):
 
     batch_size = 32 # in sequences
     misc = {'rawctx':[], 'ctoken':[], 'answer':[], 'uid':[]}
-    tsv_reader = create_tsv_reader(loss, test_data, polymath, batch_size, 1, is_test=True, misc=misc)
+    input_phs = get_input_variables(loss) # TODO check if this is consistent with test
+    tsv_reader = create_tsv_reader(input_phs, test_data, polymath, batch_size, 1, is_test=True, misc=misc)
     results = {}
     with open('{}_out.json'.format(model_file), 'w', encoding='utf-8') as json_output:
         for data in tsv_reader:
-            out = model.eval(data, outputs=[begin_logits,end_logits,loss], as_numpy=False)
+            out = model.eval(data, outputs=[begin_logits,end_logits], as_numpy=False)
             g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
             other_input_map = {begin_prediction: g[begin_prediction], end_prediction: g[end_prediction]}
             span = predicted_span.eval((other_input_map))
@@ -400,37 +406,33 @@ def test(test_data, model_path, model_file, config_file):
 if __name__=='__main__':
     # default Paths relative to current python file.
     abs_path   = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(abs_path, 'Models')
-    data_path  = os.path.join(abs_path, '.')
+    data_path  = os.path.join('..', 'data')
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-datadir', '--datadir', help='Data directory where the dataset is located', required=False, default=data_path)
-    parser.add_argument('-outputdir', '--outputdir', help='Output directory for checkpoints and models', required=False, default=None)
-    parser.add_argument('-logfile', '--logfile', help='Log file version', required=False, default=log_file_name)
+    parser.add_argument('-outputdir', '--outputdir', help='Output directory for checkpoints and models', required=False, default='output')
+    parser.add_argument('-logfile', '--logfile', help='Log file prefix', required=False, default='default')
     parser.add_argument('-profile', '--profile', help="Turn on profiling", action='store_true', default=False)
     parser.add_argument('-genheartbeat', '--genheartbeat', help="Turn on heart-beat for philly", action='store_true', default=False)
     parser.add_argument('-config', '--config', help='Config file', required=False, default='config')
     parser.add_argument('-r', '--restart', help='Indicating whether to restart from scratch (instead of restart from checkpoint file by default)', action='store_true')
     parser.add_argument('-test', '--test', help='Test data file', required=False, default=None)
-    parser.add_argument('-model', '--model', help='Model file name', required=False, default=model_name)
+    parser.add_argument('-model', '--model', help='Model file name, also used for saving', required=False, default='default')
+    parser.add_argument('--gpu', help='designate which gpu to use', type=int, default=0)
 
     args = vars(parser.parse_args())
-
-    if args['outputdir'] is not None:
-        model_path = args['outputdir'] + "/models"
+    model_path = os.path.join(args['outputdir'],"/models")
     if args['datadir'] is not None:
         data_path = args['datadir']
-
-    #C.try_set_default_device(C.gpu(0))
 
     test_data = args['test']
     test_model = args['model']
     if test_data:
-        test(test_data, model_path, test_model, args['config'])
+        test(test_data, model_path, test_model, args['config'], args['gpu'])
     else:
         try:
             train(data_path, model_path, args['logfile'], args['config'],
-                restore = args['restart'],
+                restore = args['restart'], model_name = test_model,
                 profiling = args['profile'],
                 gen_heartbeat = args['genheartbeat'])
         finally:

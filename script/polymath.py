@@ -37,6 +37,10 @@ class PolyMath:
         print('use_cudnn', self.use_cudnn)
         print('use_sparse', self.use_sparse)
 
+        self._model=None
+        self._loss=None
+        self._input_phs=None
+
     def charcnn(self, x):
         conv_out = C.layers.Sequential([
             C.layers.Embedding(self.char_emb_dim),
@@ -175,7 +179,7 @@ class PolyMath:
             'output_layer',
             'output_layer')
 
-    def model(self):
+    def build_model(self):
         c = C.Axis.new_unique_dynamic_axis('c')
         q = C.Axis.new_unique_dynamic_axis('q')
         b = C.Axis.default_batch_axis()
@@ -187,6 +191,9 @@ class PolyMath:
         qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qwn,
+                        'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
+        self._input_phs = input_phs
 
         #input layer
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
@@ -205,4 +212,22 @@ class PolyMath:
         end_loss = seq_loss(end_logits, ae)
         #paper_loss = start_loss + end_loss
         new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
-        return C.combine([start_logits, end_logits]), new_loss
+        self._model = C.combine([start_logits,end_logits])
+        self._loss = new_loss        
+        return self._model, self._loss, self._input_phs
+
+    @property
+    def model(self):
+        if not self._model:
+            self._model, self._loss, self._input_phs = self.build_model()
+        return self._model
+    @property
+    def loss(self):
+        if not self._model:
+            self._model, self._loss, self._input_phs = self.build_model()
+        return self._loss
+    @property
+    def input_phs(self):
+        if not self._model:
+            self._model, self._loss, self._input_phs = self.build_model()
+        return self._input_phs
