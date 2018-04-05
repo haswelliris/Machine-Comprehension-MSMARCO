@@ -3,7 +3,8 @@ data_config = {
     'word_count_threshold' : 10,
     'char_count_threshold' : 50,
     'pickle_file' : 'vocabs.pkl',
-    'glove_file': 'glove.6B.100d.txt'
+    'word_embed_file': 'glove.6B.100d.txt',
+    'char_embed_file': 'glove.840B.300d-char.txt'
 }
 
 model_config = {
@@ -19,12 +20,9 @@ model_config = {
 
 training_config = {
     'logdir'            : 'logs', # logdir for log outputs and tensorboard
-    'tensorboard_freq'  : 1, # tensorboard record frequence 
-    'minibatch_size'    : 24576,    # in samples when using ctf reader, per worker
-    'epoch_size'        : 24325,   # in sequences, when using ctf reader
+    'tensorboard_freq'  : 500, # tensorboard record frequence
     'log_freq'          : 500,     # in minibatchs
-    'max_epochs'        : 300,
-    'lr'                : 3,
+    'save_freq':60, # save checkpoint frequency
     'train_data'        : 'train.ctf',  # or 'train.tsv'
     'val_data'          : 'dev.ctf',
     'val_interval'      : 1,       # interval in epochs to run validation
@@ -34,4 +32,10 @@ training_config = {
     'gpu_pad'           : 0, #emmmmmmm
     'gpu_cnt'           : 1, # number of gpus
     'multi_gpu'         : False, # using multi GPU training
-}
+    # training hyperparameters
+    'minibatch_size'    : 256,    # in samples when using ctf reader, per worker
+    'epoch_size'        : 24325,   # in sequences, when using ctf reader
+    'max_epochs'        : 300,
+    'lr'                : 0.1,
+    'decay':{'epoch':100, 'rate':0.5}
+    }
