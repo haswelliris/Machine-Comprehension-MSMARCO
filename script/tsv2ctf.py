@@ -44,7 +44,7 @@ def populate_dicts(files):
                         test_wdcnt[t.lower()] += 1
 
     # add all words that are both in glove and the vocabulary first
-    with open('glove.6B.100d.txt', encoding='utf-8') as f:
+    with open('glove.840B.300d.txt', encoding='utf-8') as f:
         for line in f:
             word = line.split()[0].lower()
             if wdcnt[word] >= 1 or test_wdcnt[word] >= 1: # polymath adds word to dict regardless of word_count_threshold when it's in GloVe
@@ -52,18 +52,18 @@ def populate_dicts(files):
     known =len(vocab)
 
     # add the special markers
+    _ = vocab[unk]; unkid = vocab[unk]
     _ = vocab[pad]
-    _ = vocab[unk]
+    _ = chars[unk]; unkcid = chars[unk]
     _ = chars[pad]
-    _ = chars[unk]
     _ = vocab[START_TOKEN]
     _ = vocab[END_TOKEN]
 
     #finally add all words that are not in yet
     _  = [vocab[word] for word in wdcnt if word not in vocab and wdcnt[word] > word_count_threshold]
     _  = [chars[c]    for c    in chcnt if c    not in chars and chcnt[c]    > char_count_threshold]
-	# return as defaultdict(int) so that new keys will return 0 which is the value for <unknown>
-    return known, defaultdict(int, vocab), defaultdict(int, chars)
+	# return as defaultdict(int) so that new keys will return id which is the value for <unknown>
+    return known, dict(vocab), dict(chars)
 
 def tsv_iter(line, vocab, chars, is_test=False, misc={}):
     unk_w = vocab[unk]
