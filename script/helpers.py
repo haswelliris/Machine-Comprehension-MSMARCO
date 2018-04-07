@@ -12,7 +12,7 @@ def print_para_info(dummy, ema):
 		pprint('{}:{}'.format(res[k], v))
 	print("===================")
 
-def OptimizedRnnStack(hidden_dim, num_layers=1, recurrent_op='lstm', bidirectional=False, use_cudnn=True, name=''):
+def OptimizedRnnStack(hidden_dim, num_layers=1, recurrent_op='gru', bidirectional=False, use_cudnn=True, name=''):
     if use_cudnn:
         W = C.parameter(_INFERRED + (hidden_dim,), init=C.glorot_uniform())
         def func(x):
@@ -21,8 +21,8 @@ def OptimizedRnnStack(hidden_dim, num_layers=1, recurrent_op='lstm', bidirection
     else:
         def func(x):
             return C.splice(
-                        C.layers.Recurrence(C.layers.LSTM(hidden_dim))(x),
-                        C.layers.Recurrence(C.layers.LSTM(hidden_dim), go_backwards=True)(x),
+                        C.layers.Recurrence(C.layers.GRU(hidden_dim))(x),
+                        C.layers.Recurrence(C.layers.GRU(hidden_dim), go_backwards=True)(x),
                         name=name)
         return func
 
@@ -52,7 +52,9 @@ def HighwayNetwork(dim, highway_layers, name=''):
     
 def seq_loss(logits, y):
     prob = C.sequence.softmax(logits)
-    return -C.log(C.sequence.last(C.sequence.gather(prob, y)))
+    z = C.sequence.gather(prob, y)
+    print('z:{}'.format(z.output))
+    return -C.log(C.sequence.last(z))
 
 def all_spans_loss(start_logits, start_y, end_logits, end_y):
     # this works as follows:
