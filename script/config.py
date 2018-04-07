@@ -12,10 +12,11 @@ model_config = {
     'char_convs'     	: 100,
     'char_emb_dim'   	: 8,
     'word_emb_dim'      : 100,
-    'dropout'        	: 0.2,
+    'dropout'        	: 0.5,
     'highway_layers' 	: 2,
     'two_step'          : True,
     'use_cudnn'         : True,
+    'use_layerbn':      : False
 }
 
 training_config = {

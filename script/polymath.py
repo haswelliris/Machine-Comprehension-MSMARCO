@@ -255,14 +255,15 @@ class BiDAF(PolyMath):
         return self._model, self._loss, self._input_phs
 
 
-
-
 from subnetworks import IndRNN
 class BiDAFInd(BiDAF):
     def __init__(self, config_file):
         super(self, BiDAFInd).__init__(config_file)
+        model_config = importlib.import_module(config_file).model_config
+
         self._time_step = 100 #TODO: dataset explore
         self._indrnn_builder = IndRNN(self.hidden_dim, self.hidden_dim, recurrent_max_abs=pow(2, 1/self._time_step), activation = C.leaky_relu)
+        self.use_layerbn = model_config['use_layerbn']
 
     def charcnn(self, x):
         '''
@@ -298,7 +299,7 @@ class BiDAFInd(BiDAF):
         indrnns = [self._indrnn_builder.build() for _ in range(5)]
         indrnns.insert(0,ind1)
 
-        process = C.For(
+        process = C.layers.For(
             range(3),lambda i:C.Sequential([
                 C.layers.Dropout(self.dropout),
                 (C.layers.Recurrence(indrnns[2*i]),C.layers.Recurrence(indrnns[2*i+1],go_backwards=True)),
@@ -316,5 +317,33 @@ class BiDAFInd(BiDAF):
             'input_layer')
 
 
+    def modeling_layer(self, attention_context):
+        att_context = C.placeholder(shape=(8*self.hidden_dim,))
+        self._indrnn_builder._input_size = 8*self.hidden_dim
+        ind1 = self._indrnn_builder.build()
+        self._indrnn_builder._input_size = 2*self.hidden_dim
+        indrnns = [self._indrnn_builder.build() for _ in range(11)]
+        indrnns.insert(0,ind1)
+        #modeling layer 6 resnet layers
+        model = C.layers.For(range(3),lambda i:C.layers.Sequential([
+            C.layers.ResNetBlock(
+                C.layers.Sequentail([
+                    C.layers.LayerNormalization() if self.use_layerbn else C.layers.identity,
+                    C.layers.Dropout(self.dropout),
+                    (C.layers.Recurrence(indrnns[4*i]), C.layers.Recurrence(indrnns[4*i+1],go_backwards=True)),
+                    C.splice,
+                    C.layers.LayerNormalization() if self.use_layerbn else C.layers.identity,
+                    C.layers.Dropout(self.dropout),
+                    (C.layers.Recurrence(indrnns[4*i+2]), C.layers.Recurrence(indrnns[4*i+3],go_backwards=True)),
+                    C.splice
+                ])
+            )
+        ]))
+        mod_context = model(att_context)
+        return C.as_block(
+            mod_context,
+            [(att_context, attention_context)],
+            'modeling_layer',
+            'modeling_layer')
 
 
