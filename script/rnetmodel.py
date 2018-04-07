@@ -1,49 +1,82 @@
 import cntk as C
-from cntk.initializer import glorot_uniform
-import numpy as np
+from cntk.layers import *
 from helpers import *
-import os, sys, pickle
-import config
+import polymath
 
-# =============== configure ===============
-data_config = config.data_config
-model_config = config.model_config
-word_size = data_config['word_size']
-abs_path = os.path.dirname(os.path.abspath(__file__))
-pickle_file = os.path.join(abs_path, data_config['pickle_file'])
+class RNet(polymath.PolyMath):
+    def __init__(self, config_file):
+        super(self, RNet).__init__(config_file)
+    def input_layer(self,cgw,cnw,cc,qgw,qnw,qc):
+        cgw_ph = C.placeholder()
+        cnw_ph = C.placeholder()
+        cc_ph  = C.placeholder()
+        qgw_ph = C.placeholder()
+        qnw_ph = C.placeholder()
+        qc_ph  = C.placeholder()
 
-with open(pickle_file, 'rb') as vf:
-    known, vocab, chars = pickle.load(vf)
+        input_chars = C.placeholder(shape=(1,self.word_size,self.c_dim))
+        input_glove_words = C.placeholder(shape=(self.wg_dim,))
+        input_nonglove_words = C.placeholder(shape=(self.wn_dim,))
 
-wg_dim = known
-wn_dim = len(vocab) - known
-char_dim = len(chars)
-a_dim=1
+        # we need to reshape because GlobalMaxPooling/reduce_max is retaining a trailing singleton dimension
+        # todo GlobalPooling/reduce_max should have a keepdims default to False
+        embedded = C.splice(
+            C.reshape(self.charcnn(input_chars), self.convs),
+            self.word_glove()(input_glove_words, input_nonglove_words), name='splice_embed')
+        highway = HighwayNetwork(dim=2*self.hidden_dim, highway_layers=self.highway_layers)(embedded)
+        highway_drop = C.layers.Dropout(self.dropout)(highway)
+        processed = OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='input_rnn')(highway_drop)
 
-hidden_dim = model_config['hidden_dim']
-dropout = model_config['dropout']
-char_emb_dim = model_config['char_emb_dim']
-convs = model_config['char_convs']
-word_emb_dim = model_config['word_emb_dim']
-use_cudnn = model_config['use_cudnn']
-use_sparse = True
+        qce = C.one_hot(qc_ph, num_classes=self.c_dim, sparse_output=self.use_sparse)
+        cce = C.one_hot(cc_ph, num_classes=self.c_dim, sparse_output=self.use_sparse)
 
-print('dropout', dropout)
-print('use_cudnn', use_cudnn)
-print('use_sparse', use_sparse)
-# =============== function ======================
-def load_weight(path):
-    w = np.empty(shape=(wg_dim, word_emb_dim))
-    with open(path, encoding='utf8') as f:
-        for line in f:
-            parts = line.split()
-            word = parts[0].lower()
-            if word in vocab:
-                w[vocab[word],:] = np.asarray([float(p) for p in parts[1:]])
-    ukvec = np.copy(w[:wn_dim]) * np.random.rand(wn_dim, word_emb_dim)
-    w = np.vstack((w, ukvec))
-    print('word embedding size: {}'.format(w.shape))
-    return w
+        q_processed = processed.clone(C.CloneMethod.share, {input_chars:qce, input_glove_words:qgw_ph, input_nonglove_words:qnw_ph})
+        c_processed = processed.clone(C.CloneMethod.share, {input_chars:cce, input_glove_words:cgw_ph, input_nonglove_words:cnw_ph})
+
+        return C.as_block(
+            C.combine([c_processed, q_processed]),
+            [(cgw_ph, cgw),(cnw_ph, cnw),(cc_ph, cc),(qgw_ph, qgw),(qnw_ph, qnw),(qc_ph, qc)],
+            'input_layer',
+            'input_layer')
+
+    def dot_attention(self,inputs, memory):
+        '''
+        @inputs: [#,c][d] a sequence need attention
+        @memory(key): [#,q][d] a sequence input refers to compute similarity(weight)
+        @value: [#,q][d] a sequence input refers to weighted sum
+        @output: [#,c][d] attention vector
+        '''
+        with C.layers.default_options(bias=False, activation=C.relu): # all the projections have no bias
+            attn_proj_enc = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1, name="Wqu")
+            attn_proj_dec = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1)
+
+        inputs_ = attn_proj_enc(inputs) # [#,c][d]
+        memory_ = attn_proj_dec(memory) # [#,q][d]
+        outputs = C.times_transpose(inputs_, memory_)/(self.hidden_dim**0.5)
+        logits = C.softmax(outputs)
+        weighted_att = C.times(logits, memory)
+
+
+    def build_model(self):
+        q_axis = C.Axis.new_unique_dynamic_axis('query')
+        c_axis = C.Axis.new_unique_dynamic_axis("context")
+        b = C.Axis.default_batch_axis()
+        # context 由于某些操作不支持稀疏矩阵，全部采用密集输入
+        cgw = C.sequence.input_variable(self.wg_dim, sequence_axis=c_axis, name='cgw')
+        cnw = C.sequence.input_variable(self.wn_dim, sequence_axis=c_axis, name='cnw')
+        cc = C.input_variable(self.word_size, dynamic_axes = [b,c_axis], name='cc')
+        # query
+        qgw = C.sequence.input_variable(self.wg_dim, sequence_axis=q_axis, name='qgw')
+        qnw = C.sequence.input_variable(self.wn_dim, sequence_axis=q_axis, name='qnw')
+        qc = C.input_variable(self.word_size, dynamic_axes = [b,q_axis], name='qc')
+        ab = C.sequence.input_variable(self.a_dim, sequence_axis=c_axis, name='ab')
+        ae = C.sequence.input_variable(self.a_dim, sequence_axis=c_axis, name='ae')
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
+                        'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
+
+        self._input_phs = input_phs
+        # graph
+        qu, pu = input_layer(cgw, cnw, cc, qgw, qnw, qc)
 
 # =============== factory function ==============
 def create_birnn(runit_forward,runit_backward, name=''):
@@ -55,21 +88,6 @@ def create_birnn(runit_forward,runit_backward, name=''):
         h = C.splice(posRnn(e), negRnn(e), name=name)
         return h
     return BiRnn
-def create_word_embed():
-    # load glove
-    npglove = np.zeros((wg_dim, word_emb_dim), dtype=np.float32)
-    with open(os.path.join(abs_path, 'glove.6B.100d.txt'), encoding='utf-8') as f:
-        for line in f:
-            parts = line.split()
-            word = parts[0].lower()
-            if word in vocab:
-                npglove[vocab[word],:] = np.asarray([float(p) for p in parts[1:]])
-    glove = C.constant(npglove)
-    nonglove = C.parameter(shape=(len(vocab) - wg_dim, word_emb_dim), init=C.glorot_uniform(), name='TrainableE')
-    
-    def func(wg, wn):
-        return C.times(wg, glove) + C.times(wn, nonglove)
-    return func
 def create_attention(attention_dim, name=""):
     # model parameters
     with C.layers.default_options(bias=False): # all the projections have no bias
@@ -113,18 +131,6 @@ def Attention3State(attention_dim, name=""):
         return attn(encoder_hidden_state, decoder_hidden)
     return AttentionAdapter
 # =============== layer function ================
-def charcnn(x):
-    conv_out = C.layers.Sequential([
-        C.layers.Embedding(char_emb_dim),
-        C.layers.Dropout(dropout),
-        C.layers.Convolution2D((5,char_emb_dim), convs, reduction_rank=0,
-            activation=C.relu, init=C.glorot_uniform(),
-            bias=True, init_bias=0, name='charcnn_conv')])(x)
-    
-    res = C.reshape(C.reduce_max(conv_out, axis=1),(-1))
-    print("charcnn output shape:{}".format(conv_out.output))
-    print("reduce output shape:{}".format(res.output))
-    return res
 def attention_layer(qu, pu, decoder_hidden_state):
     with C.layers.default_options(bias=False): # all the projections have no bias
         attn_proj_enc = C.layers.Dense(hidden_dim, init=glorot_uniform(), input_rank=1, name="Wqu")
@@ -149,31 +155,8 @@ def attention_layer(qu, pu, decoder_hidden_state):
     attended_encoder_hidden_state = C.reduce_sum(attention_weights * C.sequence.broadcast_as(unpacked_qu, attention_weights), axis=0)
     output = C.reshape(attended_encoder_hidden_state, (), 0, 1) # 去掉len=1的一层
     return output
-def input_layer(cgw_ph, cnw_ph, cc_ph, qgw_ph, qnw_ph, qc_ph):
-    print('input shape word:{} char:{}'.format(cgw_ph, cc_ph))
-    # parameter
-    # word_embed_layer = C.layers.Embedding(weights=load_weight(data_config['glove_file']), name='word_level_embed')
-    word_embed_layer = create_word_embed()
-
-    # birnn_pu = create_birnn(C.layers.GRU(hidden_dim//2),
-    #     C.layers.GRU(hidden_dim//2)) 
-    # birnn_qu = create_birnn(C.layers.GRU(hidden_dim//2),
-    #     C.layers.GRU(hidden_dim//2))
-    birnn_pu = OptimizedRnnStack(hidden_dim//2, 3,'gru',bidirectional=True)
-    birnn_qu = OptimizedRnnStack(hidden_dim//2, 3,'gru',bidirectional=True)
-
-    # graph
-    qe = C.splice(word_embed_layer(qgw_ph, qnw_ph), 
-                charcnn(C.one_hot(qc_ph, char_dim, name="one_hot")))
-    pe = C.splice(word_embed_layer(cgw_ph, cnw_ph), 
-                charcnn(C.one_hot(cc_ph, char_dim, name="one_hot")))    
-    qu = birnn_qu(qe); pu = birnn_pu(pe)
-    print('char onehot shape:{}'.format(C.one_hot(qc_ph, char_dim).output))
-    print("embed output shape:qe:{} \npe:{}".format(qe.output ,pe.output))
-    print("birnn output shape:qu:{} \npu:{}".format(qu.output ,pu.output))
-    return qu, pu
 def gate_attention_recurrence_layer(qu, pu):
-    
+
     # parameter
     r = C.layers.Recurrence(C.layers.RNNStep(hidden_dim))
     # graph
@@ -258,22 +241,7 @@ def output_layer(init_state, input_state):
     print('pointer shape:{}'.format(start_pos.output))
     return attention_weights_start, attention_weights_end
 def create_rnet():
-    q_axis = C.Axis.new_unique_dynamic_axis('query')
-    c_axis = C.Axis.new_unique_dynamic_axis("context")
-    b = C.Axis.default_batch_axis()
-    # context 由于某些操作不支持稀疏矩阵，全部采用密集输入
-    cgw = C.sequence.input_variable(wg_dim, sequence_axis=c_axis, name='cgw')
-    cnw = C.sequence.input_variable(wn_dim, sequence_axis=c_axis, name='cnw')
-    cc = C.input_variable(word_size, dynamic_axes = [b,c_axis], name='cc')
-    # query
-    qgw = C.sequence.input_variable(wg_dim, sequence_axis=q_axis, name='qgw')
-    qnw = C.sequence.input_variable(wn_dim, sequence_axis=q_axis, name='qnw')
-    qc = C.input_variable(word_size, dynamic_axes = [b,q_axis], name='qc')
-    ab = C.sequence.input_variable(1, sequence_axis=c_axis, name='ab')
-    ae = C.sequence.input_variable(1, sequence_axis=c_axis, name='ae')
 
-    # graph
-    qu, pu = input_layer(cgw, cnw, cc, qgw, qnw, qc)
     pv = gate_attention_recurrence_layer(qu, pu)
     ph = self_match_attention(pv)
     Wqu = pv.find_by_name('Wqu').parameters[0]
@@ -310,7 +278,7 @@ def test_model_part():
     ph = self_match_attention(pv)
     Wqu = pv.find_by_name('Wqu').parameters[0]
     rq = attention_pooling_layer(Wqu, qu)
-    return C.combine(rq,ab,ae) 
+    return C.combine(rq,ab,ae)
 def _testcode():
     data=[np.array([[1,2,3,0],[1,2,3,0]]),
         np.array([[1,2,0,0],[2,3,0,0]]),
@@ -319,9 +287,3 @@ def _testcode():
 
 if __name__ == '__main__':
     create_rnet()
-
-'''
-data=[np.array([[1,2,3,0],[1,2,3,0]]),
-    np.array([[1,2,0,0],[2,3,0,0]]),
-    np.array([[4,0,0,0],[5,0,0,0],[6,0,0,0]])]
-'''
