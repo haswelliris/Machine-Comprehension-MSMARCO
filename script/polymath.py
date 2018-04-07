@@ -67,9 +67,9 @@ class PolyMath(object):
                     npglove[self.chars[word],:] = np.asarray([float(p) for p in parts[1:]])
         glove = C.constant(npglove)
         @C.Function
-        def func(wg, wn):
-            return C.times(wg, glove)
-        return func
+        def func(cg):
+             return C.times(cg, glove)
+         return func
     def build_model(self):
         raise NotImplementedError
     @property
@@ -93,7 +93,7 @@ class BiDAF(PolyMath):
         super(self, BiDAF).__init__(config_file)
         data_config = importlib.import_module(config_file).data_config
         model_config = importlib.import_module(config_file).model_config
-        
+
         self.convs = model_config['char_convs']
         self.highway_layers = model_config['highway_layers']
         self.two_step = model_config['two_step']
@@ -253,3 +253,68 @@ class BiDAF(PolyMath):
         self._model = C.combine([start_logits,end_logits])
         self._loss = new_loss
         return self._model, self._loss, self._input_phs
+
+
+
+
+from subnetworks import IndRNN
+class BiDAFInd(BiDAF):
+    def __init__(self, config_file):
+        super(self, BiDAFInd).__init__(config_file)
+        self._time_step = 100 #TODO: dataset explore
+        self._indrnn_builder = IndRNN(self.hidden_dim, self.hidden_dim, recurrent_max_abs=pow(2, 1/self._time_step), activation = C.leaky_relu)
+
+    def charcnn(self, x):
+        '''
+        @x:[I,w1,w2,w3,...]
+        @kernal:[O,I,w1,w2,w3,...]
+        @out:[O,?depend on stride]
+        '''
+        conv_out = C.layers.Sequential([
+            C.layers.Dropout(self.dropout),
+            C.layers.Convolution2D((5,self.char_emb_dim), self.convs, activation=C.relu, init=C.glorot_uniform(), bias=True, init_bias=0, name='charcnn_conv')])(x)
+        return C.reduce_max(conv_out, axis=1) # workaround cudnn failure in GlobalMaxPooling
+
+    def input_layer(self, x):
+        cgw_ph = C.placeholder()
+        cnw_ph = C.placeholder()
+        cc_ph  = C.placeholder()
+        qgw_ph = C.placeholder()
+        qnw_ph = C.placeholder()
+        qc_ph  = C.placeholder()
+        input_chars = C.placeholder(shape=(1,self.word_size,self.c_dim))
+        input_glove_words = C.placeholder(shape=(self.wg_dim,))
+        input_nonglove_words = C.placeholder(shape=(self.wn_dim,))
+
+        qce = C.one_hot(qc_ph, num_classes=self.c_dim, sparse_output=self.use_sparse)
+        cce = C.one_hot(cc_ph, num_classes=self.c_dim, sparse_output=self.use_sparse)
+        word_embed = self.word_glove()(input_glove_words, input_nonglove_words)
+        char_embed = self.char_glove()(input_chars)
+        embeded = C.splice(word_embed, C.reshape(self.charcnn(char_embed),self.convs), name='splice_embeded')
+
+        self._indrnn_builder._input_size = self.word_emb_dim+self.convs
+        ind1 = self._indrnn_builder.build()
+        self._indrnn_builder._input_size = 2*self.hidden_dim
+        indrnns = [self._indrnn_builder.build() for _ in range(5)]
+        indrnns.insert(0,ind1)
+
+        process = C.For(
+            range(3),lambda i:C.Sequential([
+                C.layers.Dropout(self.dropout),
+                (C.layers.Recurrence(indrnns[2*i]),C.layers.Recurrence(indrnns[2*i+1],go_backwards=True)),
+                C.splice
+            ]))
+        processed = process(embeded)
+
+        q_processed = processed.clone(C.CloneMethod.share, {input_chars:qce, input_glove_words:qgw_ph, input_nonglove_words:qnw_ph})
+        c_processed = processed.clone(C.CloneMethod.share, {input_chars:cce, input_glove_words:cgw_ph, input_nonglove_words:cnw_ph})
+
+        return C.as_block(
+            C.combine([c_processed, q_processed]),
+            [(cgw_ph, cgw),(cnw_ph, cnw),(cc_ph, cc),(qgw_ph, qgw),(qnw_ph, qnw),(qc_ph, qc)],
+            'input_layer',
+            'input_layer')
+
+
+
+

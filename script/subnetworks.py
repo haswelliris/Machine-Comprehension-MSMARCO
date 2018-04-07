@@ -1,7 +1,5 @@
 import cntk as C
 from cntk.initializer import xavier, glorot_uniform, normal
-from cntk.logging import ProgressPrinter
-import numpy as np
 
 class IndRNN(object):
     def __init__(self, hidden_dim,input_size,
