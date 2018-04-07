@@ -268,6 +268,7 @@ def validate_model(test_data, polymath,config_file):
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
     loss         = polymath.loss
+    model = C.combine(begin_logits, end_logits, loss)
     input_phs = polymath.input_phs
     mb_source, input_map = create_mb_and_map(input_phs, test_data, polymath, randomize=False, repeat=False)
     begin_label = input_phs['ab']

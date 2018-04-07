@@ -2,6 +2,8 @@
 *.pkl
 *.ctf
 *.txt
+*.tsv
+logs/*
 model
 __pycache__
 ms_marco_eval/*test.json
