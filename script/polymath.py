@@ -5,7 +5,7 @@ import pickle
 import importlib
 import os
 
-class PolyMath:
+class PolyMath(object):
     def __init__(self, config_file):
         data_config = importlib.import_module(config_file).data_config
         model_config = importlib.import_module(config_file).model_config
@@ -27,11 +27,9 @@ class PolyMath:
         self.a_dim = 1
 
         self.hidden_dim = model_config['hidden_dim']
-        self.convs = model_config['char_convs']
         self.dropout = model_config['dropout']
         self.char_emb_dim = model_config['char_emb_dim']
-        self.highway_layers = model_config['highway_layers']
-        self.two_step = model_config['two_step']
+        self.word_emb_dim = model_config['word_emb_dim']
         self.use_cudnn = model_config['use_cudnn']
         self.use_sparse = True
 
@@ -43,28 +41,69 @@ class PolyMath:
         self._loss=None
         self._input_phs=None
 
+    def word_glove(self):
+        # load glove
+        npglove = np.zeros((self.wg_dim, self.word_emb_dim, dtype=np.float32)
+        with open(os.path.join(self.abs_path, self.word_embed_file), encoding='utf-8') as f:
+            for line in f:
+                parts = line.split()
+                word = parts[0].lower()
+                if self.vocab.get(word, self.wg_dim)<self.wg_dim:
+                    npglove[self.vocab[word],:] = np.asarray([float(p) for p in parts[1:]])
+        glove = C.constant(npglove)
+        nonglove = C.parameter(shape=(len(self.vocab) - self.wg_dim, self.word_emb_size), init=C.glorot_uniform(), name='TrainableE')
+        @C.Function
+        def func(wg, wn):
+            return C.times(wg, glove) + C.times(wn, nonglove)
+        return func
+    def char_glove(self):
+        npglove = np.zeros(self.c_dim, self.char_emb_dim, dtype=np.float32)
+        # only 94 known chars, 308 chars in all
+        with open(os.path.join(self.abs_path, self.char_embed_file), encoding='utf-8') as f:
+            for line in f:
+                parts = line.split()
+                word = parts[0].lower()
+                if self.chars.get(word, self.c_dim)<self.c_dim:
+                    npglove[self.chars[word],:] = np.asarray([float(p) for p in parts[1:]])
+        glove = C.constant(npglove)
+        @C.Function
+        def func(wg, wn):
+            return C.times(wg, glove)
+        return func
+    def build_model(self):
+        raise NotImplementedError
+    @property
+    def model(self):
+        if not self._model:
+            self._model, self._loss, self._input_phs = self.build_model()
+        return self._model
+    @property
+    def loss(self):
+        if not self._model:
+            self._model, self._loss, self._input_phs = self.build_model()
+        return self._loss
+    @property
+    def input_phs(self):
+        if not self._model:
+            self._model, self._loss, self._input_phs = self.build_model()
+        return self._input_phs
+
+class BiDAF(PolyMath):
+    def __init__(self, config_file):
+        super(self, BiDAF).__init__(config_file)
+        data_config = importlib.import_module(config_file).data_config
+        model_config = importlib.import_module(config_file).model_config
+        
+        self.convs = model_config['char_convs']
+        self.highway_layers = model_config['highway_layers']
+        self.two_step = model_config['two_step']
+
     def charcnn(self, x):
         conv_out = C.layers.Sequential([
             C.layers.Embedding(self.char_emb_dim),
             C.layers.Dropout(self.dropout),
             C.layers.Convolution2D((5,self.char_emb_dim), self.convs, activation=C.relu, init=C.glorot_uniform(), bias=True, init_bias=0, name='charcnn_conv')])(x)
         return C.reduce_max(conv_out, axis=1) # workaround cudnn failure in GlobalMaxPooling
-
-    def embed(self):
-        # load glove
-        npglove = np.zeros((self.wg_dim, self.hidden_dim), dtype=np.float32)
-        with open(os.path.join(self.abs_path, self.word_embed_file), encoding='utf-8') as f:
-            for line in f:
-                parts = line.split()
-                word = parts[0].lower()
-                if word in self.vocab:
-                    npglove[self.vocab[word],:] = np.asarray([float(p) for p in parts[1:]])
-        glove = C.constant(npglove)
-        nonglove = C.parameter(shape=(len(self.vocab) - self.wg_dim, self.hidden_dim), init=C.glorot_uniform(), name='TrainableE')
-
-        def func(wg, wn):
-            return C.times(wg, glove) + C.times(wn, nonglove)
-        return func
 
     def input_layer(self,cgw,cnw,cc,qgw,qnw,qc):
         cgw_ph = C.placeholder()
@@ -82,7 +121,7 @@ class PolyMath:
         # todo GlobalPooling/reduce_max should have a keepdims default to False
         embedded = C.splice(
             C.reshape(self.charcnn(input_chars), self.convs),
-            self.embed()(input_glove_words, input_nonglove_words), name='splice_embed')
+            self.word_glove()(input_glove_words, input_nonglove_words), name='splice_embed')
         highway = HighwayNetwork(dim=2*self.hidden_dim, highway_layers=self.highway_layers)(embedded)
         highway_drop = C.layers.Dropout(self.dropout)(highway)
         processed = OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='input_rnn')(highway_drop)
@@ -190,7 +229,7 @@ class PolyMath:
         qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
-        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qwn,
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
                         'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
         self._input_phs = input_phs
 
@@ -214,19 +253,3 @@ class PolyMath:
         self._model = C.combine([start_logits,end_logits])
         self._loss = new_loss
         return self._model, self._loss, self._input_phs
-
-    @property
-    def model(self):
-        if not self._model:
-            self._model, self._loss, self._input_phs = self.build_model()
-        return self._model
-    @property
-    def loss(self):
-        if not self._model:
-            self._model, self._loss, self._input_phs = self.build_model()
-        return self._loss
-    @property
-    def input_phs(self):
-        if not self._model:
-            self._model, self._loss, self._input_phs = self.build_model()
-        return self._input_phs

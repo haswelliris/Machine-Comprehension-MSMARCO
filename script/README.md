@@ -1,5 +1,3 @@
-# Instructions for getting started with bidaf
-
 ## Download the MS MARCO  dataset
 ```
 wget https://msmarco.blob.core.windows.net/msmarco/train_v1.1.json.gz
@@ -10,6 +8,8 @@ wget https://msmarco.blob.core.windows.net/msmarco/test_public_v1.1.json.gz
 ```
 wget http://nlp.stanford.edu/data/glove.6B.zip
 unzip glove.6B.zip
+http://nlp.stanford.edu/data/glove.840B.300d.zip
+https://raw.githubusercontent.com/minimaxir/char-embeddings/master/glove.840B.300d-char.txt
 ```
 ## Download NLTK punkt
 ```

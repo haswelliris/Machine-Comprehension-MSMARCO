@@ -132,7 +132,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
 
     # training setting
     polymath = PolyMath(config_file)
-    z, loss, input_phs = polymath.model()
+    z, loss, input_phs = polymath.build_model()
 
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']

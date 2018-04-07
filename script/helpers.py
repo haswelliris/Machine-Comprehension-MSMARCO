@@ -12,7 +12,6 @@ def print_para_info(dummy, ema):
 		pprint('{}:{}'.format(res[k], v))
 	print("===================")
 
-
 def OptimizedRnnStack(hidden_dim, num_layers=1, recurrent_op='lstm', bidirectional=False, use_cudnn=True, name=''):
     if use_cudnn:
         W = C.parameter(_INFERRED + (hidden_dim,), init=C.glorot_uniform())

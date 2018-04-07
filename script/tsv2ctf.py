@@ -47,8 +47,9 @@ def populate_dicts(files):
     with open('glove.840B.300d.txt', encoding='utf-8') as f:
         for line in f:
             word = line.split()[0].lower()
-            if wdcnt[word] >= 1 or test_wdcnt[word] >= 1: # polymath adds word to dict regardless of word_count_threshold when it's in GloVe
-                    _ = vocab[word]
+            # polymath adds word to dict regardless of word_count_threshold when it's in GloVe
+            if wdcnt[word] >= 1 or test_wdcnt[word] >= 1: 
+                _ = vocab[word]
     known =len(vocab)
 
     # add the special markers
