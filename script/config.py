@@ -21,12 +21,12 @@ model_config = {
 
 training_config = {
     'logdir'            : 'logs', # logdir for log outputs and tensorboard
-    'tensorboard_freq'  : 500, # tensorboard record frequence
-    'log_freq'          : 500,     # in minibatchs
+    'tensorboard_freq'  : 1, # tensorboard record frequence
+    'log_freq'          : 1,     # in minibatchs
     'save_freq':60, # save checkpoint frequency
     'train_data'        : 'train.ctf',  # or 'train.tsv'
     'val_data'          : 'dev.ctf',
-    'val_interval'      : 1,       # interval in epochs to run validation
+    'val_interval'      : 30,       # interval in epochs to run validation
     'stop_after'        : 2,       # num epochs to stop if no CV improvement
     'minibatch_seqs'    : 24,      # num sequences of minibatch, when using tsv reader, per worker
     'distributed_after' : 0,       # num sequences after which to start distributed training
@@ -34,7 +34,7 @@ training_config = {
     'gpu_cnt'           : 1, # number of gpus
     'multi_gpu'         : False, # using multi GPU training
     # training hyperparameters
-    'minibatch_size'    : 256,    # in samples when using ctf reader, per worker
+    'minibatch_size'    : 128,    # in samples when using ctf reader, per worker
     'epoch_size'        : 24325,   # in sequences, when using ctf reader
     'max_epochs'        : 300,
     'lr'                : 0.1,

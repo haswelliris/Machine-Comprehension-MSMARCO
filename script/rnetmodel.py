@@ -86,19 +86,20 @@ class RNet(polymath.PolyMath):
         weighted_att = C.reshape(C.reduce_sum(logits*memory_expand, axis=0),(-1,)) # [#,c][d]
 
         return C.as_block(
-            weighted_att,
+            C.combine(weighted_att, logits),
             [(input_ph, inputs), (input_mem, memory)],
             'dot attention',
             'dot attention'
         )
 
     def gate_attention_layer(self, inputs, memory):
-        qc_attn = self.dot_attention(inputs, memory) # [#,c][2*d]
+        # [#,c][2*d] [#,c][*=q,1]
+        qc_attn, attn_weight = self.dot_attention(inputs, memory).outputs
         cont_attn = C.splice(inputs, qc_attn) # [#,c][4*d]
 
         dense = Dropout(self.dropout) >> Dense(4*self.hidden_dim, activation=C.sigmoid, input_rank=1) >> Label('gate')
         gate = dense(cont_attn) # [#, c][4*d]
-        return gate*cont_attn
+        return gate*cont_attn, attn_weight
 
     def reasoning_layer(self, inputs, input_dim):
         input_ph = C.placeholder(shape=(input_dim,))
@@ -114,21 +115,26 @@ class RNet(polymath.PolyMath):
     def weighted_sum(self, inputs):
         input_ph = C.placeholder(shape=(self.hidden_dim*2,))
         weight = Sequential([
+            BatchNormalization(),
             Dropout(self.dropout), Dense(self.hidden_dim, activation=C.tanh),
             Dense(1,bias=False),
-            C.softmax
+            C.sequence.softmax
         ])(input_ph) # [#,c][1]
         res = C.sequence.reduce_sum(weight*input_ph)
-        return C.as_block(res,[(input_ph, inputs)], 'weighted sum','weighted sum')
+        return C.as_block(C.combine(res, weight),
+            [(input_ph, inputs)], 'weighted sum','weighted sum')
+
     def output_layer(self, init, memory):
 
         def pointer(inputs, state):
             input_ph = C.placeholder(shape=(2*self.hidden_dim,))
             state_ph = C.placeholder(shape=(2*self.hidden_dim,))
             state_expand = C.sequence.broadcast_as(state_ph, input_ph)
-            weight = Sequential([ Dropout(self.dropout),
-                Dense(self.hidden_dim, activation=C.tanh),Dense(1,bias=False),
-                C.softmax
+            weight = Sequential([
+                BatchNormalization(),
+                Dropout(self.dropout),
+                Dense(self.hidden_dim, activation=C.sigmoid),Dense(1,bias=False),
+                C.sequence.softmax
             ])(C.splice(input_ph, state_expand))
             res = C.sequence.reduce_sum(weight*input_ph)
             return C.as_block(
@@ -160,37 +166,35 @@ class RNet(polymath.PolyMath):
 
         self._input_phs = input_phs
         # graph
-        qu, pu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
-        '''
-        gate_pu = self.gate_attention_layer(pu, qu) # [#,c][4*hidden]
+        pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
+        gate_pu, wei1 = self.gate_attention_layer(pu, qu) # [#,c][4*hidden]
         print('[RNet build]gate_pu:{}'.format(gate_pu))
         pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
-        gate_self = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
+        gate_self, wei2 = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
         ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
         init_pu = self.weighted_sum(pu)
-        start_logits, end_logits  = self.output_layer(init_pu, ph) # [#, c][1]
+        
+        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph) # [#, c][1]
         
         # loss
         start_loss = seq_loss(start_logits, ab)
         end_loss = seq_loss(end_logits, ae)
-        #paper_loss = start_loss + end_loss
+        # paper_loss = start_loss + end_loss
         new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
         self._model = C.combine([start_logits,end_logits])
         self._loss = new_loss
         return self._model, self._loss, self._input_phs
-        '''
-        return C.combine(qu,pu),input_phs
+        
 # =============== test edition ==================
 from cntk.debugging import debug_model
 def test_model_part():
     from train_pm import  create_mb_and_map
     rnet = RNet('config')
-    model, input_phs = rnet.build_model()
+    model,loss, input_phs = rnet.build_model()
     mb, input_map = create_mb_and_map(input_phs, 'dev.ctf', rnet)
-    data=mb.next_minibatch(1,input_map=input_map)
+    data=mb.next_minibatch(3,input_map=input_map)
     res = model.eval(data)
     print(res)
-     
 def _testcode():
     data=[np.array([[1,2,3,0],[1,2,3,0]]),
         np.array([[1,2,0,0],[2,3,0,0]]),
