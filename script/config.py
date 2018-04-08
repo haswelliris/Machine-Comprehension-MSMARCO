@@ -3,20 +3,20 @@ data_config = {
     'word_count_threshold' : 10,
     'char_count_threshold' : 50,
     'pickle_file' : 'vocabs.pkl',
-    'word_embed_file': 'glove.6B.100d.txt',
+    'word_embed_file': 'glove.840B.300d.txt',
     'char_embed_file': 'glove.840B.300d-char.txt'
 }
 
 model_config = {
-    'hidden_dim'     	: 76,
-    'char_convs'     	: 50,
-    'char_emb_dim'   	: 8,
-    'word_emb_dim'      : 100,
+    'hidden_dim'     	: 200,
+    'char_convs'     	: 200,
+    'char_emb_dim'   	: 300,
+    'word_emb_dim'      : 300,
     'dropout'        	: 0.5,
     'highway_layers' 	: 2,
     'two_step'          : True,
     'use_cudnn'         : True,
-    'use_layerbn':      : False
+    'use_layerbn'       : False
 }
 
 training_config = {

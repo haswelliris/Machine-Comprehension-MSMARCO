@@ -43,33 +43,33 @@ class PolyMath(object):
 
     def word_glove(self):
         # load glove
-        npglove = np.zeros((self.wg_dim, self.word_emb_dim, dtype=np.float32)
+        npglove = np.zeros((self.wg_dim, self.word_emb_dim), dtype=np.float32)
         with open(os.path.join(self.abs_path, self.word_embed_file), encoding='utf-8') as f:
             for line in f:
                 parts = line.split()
                 word = parts[0].lower()
                 if self.vocab.get(word, self.wg_dim)<self.wg_dim:
-                    npglove[self.vocab[word],:] = np.asarray([float(p) for p in parts[1:]])
+                    npglove[self.vocab[word],:] = np.asarray([float(p) for p in parts[-300:]])
         glove = C.constant(npglove)
-        nonglove = C.parameter(shape=(len(self.vocab) - self.wg_dim, self.word_emb_size), init=C.glorot_uniform(), name='TrainableE')
+        nonglove = C.parameter(shape=(len(self.vocab) - self.wg_dim, self.word_emb_dim), init=C.glorot_uniform(), name='TrainableE')
         @C.Function
         def func(wg, wn):
             return C.times(wg, glove) + C.times(wn, nonglove)
         return func
     def char_glove(self):
-        npglove = np.zeros(self.c_dim, self.char_emb_dim, dtype=np.float32)
+        npglove = np.zeros((self.c_dim, self.char_emb_dim), dtype=np.float32)
         # only 94 known chars, 308 chars in all
         with open(os.path.join(self.abs_path, self.char_embed_file), encoding='utf-8') as f:
             for line in f:
                 parts = line.split()
                 word = parts[0].lower()
                 if self.chars.get(word, self.c_dim)<self.c_dim:
-                    npglove[self.chars[word],:] = np.asarray([float(p) for p in parts[1:]])
+                    npglove[self.chars[word],:] = np.asarray([float(p) for p in parts[-300:]])
         glove = C.constant(npglove)
         @C.Function
         def func(cg):
              return C.times(cg, glove)
-         return func
+        return func
     def build_model(self):
         raise NotImplementedError
     @property
@@ -90,7 +90,7 @@ class PolyMath(object):
 
 class BiDAF(PolyMath):
     def __init__(self, config_file):
-        super(self, BiDAF).__init__(config_file)
+        super(BiDAF, self).__init__(config_file)
         data_config = importlib.import_module(config_file).data_config
         model_config = importlib.import_module(config_file).model_config
 
@@ -258,7 +258,7 @@ class BiDAF(PolyMath):
 from subnetworks import IndRNN
 class BiDAFInd(BiDAF):
     def __init__(self, config_file):
-        super(self, BiDAFInd).__init__(config_file)
+        super(BiDAFInd, self).__init__(config_file)
         model_config = importlib.import_module(config_file).model_config
 
         self._time_step = 100 #TODO: dataset explore
@@ -276,7 +276,7 @@ class BiDAFInd(BiDAF):
             C.layers.Convolution2D((5,self.char_emb_dim), self.convs, activation=C.relu, init=C.glorot_uniform(), bias=True, init_bias=0, name='charcnn_conv')])(x)
         return C.reduce_max(conv_out, axis=1) # workaround cudnn failure in GlobalMaxPooling
 
-    def input_layer(self, x):
+    def input_layer(self, cgw,cnw,cc,qgw,qnw,qc):
         cgw_ph = C.placeholder()
         cnw_ph = C.placeholder()
         cc_ph  = C.placeholder()
@@ -294,13 +294,13 @@ class BiDAFInd(BiDAF):
         embeded = C.splice(word_embed, C.reshape(self.charcnn(char_embed),self.convs), name='splice_embeded')
 
         self._indrnn_builder._input_size = self.word_emb_dim+self.convs
-        ind1 = self._indrnn_builder.build()
+        ind1 = [self._indrnn_builder.build(), self._indrnn_builder.build()]
         self._indrnn_builder._input_size = 2*self.hidden_dim
-        indrnns = [self._indrnn_builder.build() for _ in range(5)]
-        indrnns.insert(0,ind1)
+        indrnns = [self._indrnn_builder.build() for _ in range(4)]
+        indrnns = ind1+indrnns
 
         process = C.layers.For(
-            range(3),lambda i:C.Sequential([
+            range(3),lambda i:C.layers.Sequential([
                 C.layers.Dropout(self.dropout),
                 (C.layers.Recurrence(indrnns[2*i]),C.layers.Recurrence(indrnns[2*i+1],go_backwards=True)),
                 C.splice
@@ -320,14 +320,14 @@ class BiDAFInd(BiDAF):
     def modeling_layer(self, attention_context):
         att_context = C.placeholder(shape=(8*self.hidden_dim,))
         self._indrnn_builder._input_size = 8*self.hidden_dim
-        ind1 = self._indrnn_builder.build()
+        ind1 = [self._indrnn_builder.build(), self._indrnn_builder.build()]
         self._indrnn_builder._input_size = 2*self.hidden_dim
-        indrnns = [self._indrnn_builder.build() for _ in range(11)]
-        indrnns.insert(0,ind1)
+        indrnns = [self._indrnn_builder.build() for _ in range(10)]
+        indrnns = ind1+indrnns
         #modeling layer 6 resnet layers
         model = C.layers.For(range(3),lambda i:C.layers.Sequential([
-            C.layers.ResNetBlock(
-                C.layers.Sequentail([
+            #C.layers.ResNetBlock(
+                C.layers.Sequential([
                     C.layers.LayerNormalization() if self.use_layerbn else C.layers.identity,
                     C.layers.Dropout(self.dropout),
                     (C.layers.Recurrence(indrnns[4*i]), C.layers.Recurrence(indrnns[4*i+1],go_backwards=True)),
@@ -337,7 +337,7 @@ class BiDAFInd(BiDAF):
                     (C.layers.Recurrence(indrnns[4*i+2]), C.layers.Recurrence(indrnns[4*i+3],go_backwards=True)),
                     C.splice
                 ])
-            )
+            #)
         ]))
         mod_context = model(att_context)
         return C.as_block(

@@ -1,6 +1,7 @@
 import cntk as C
 import numpy as np
-from polymath import PolyMath
+from polymath import BiDAFInd
+from rnetmodel import RNet
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 from helpers import print_para_info
 import tsv2ctf
@@ -131,7 +132,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
     model_file = os.path.join(model_path, model_name)
 
     # training setting
-    polymath = PolyMath(config_file)
+    polymath = RNet(config_file)
     z, loss, input_phs = polymath.build_model()
 
     max_epochs = training_config['max_epochs']
@@ -215,7 +216,6 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
                     data = mb_source.next_minibatch(minibatch_size*C.Communicator.num_workers(), input_map=input_map, num_data_partitions=C.Communicator.num_workers(), partition_index=C.Communicator.rank())
                 else:
                     data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
-
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
                 if num_seq >= epoch_size:
@@ -245,6 +245,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
             if epoch+1 % training_config['save_freq']==0:
                 save_name = os.path.join(model_path,'{}_{}.ckp'.format(model_name,epoch))
                 print('[TRAIN] save checkpoint into {}'.format(save_name))
+                os.system('ls -al')
                 trainer.save_checkpoint(save_name)
             if not post_epoch_work(epoch_stat):
                 epoch_stat['epoch'] = epoch
@@ -252,7 +253,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
 
     if profiling:
         C.debugging.stop_profiler()
-
+    
     print('[TRAIN] training finish after {} epochs'.format(epoch_stat['epoch']))
     save_name = os.path.join(model_path, model_name.split('_')[0])
     print('[TRAIN] save final model as {}.model'.format(save_name))
@@ -267,7 +268,7 @@ def validate_model(test_data, polymath,config_file):
     model = polymath.model
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
-    loss         = polymath.loss
+    loss         = polymath.loss 
     model = C.combine(begin_logits, end_logits, loss)
     input_phs = polymath.input_phs
     mb_source, input_map = create_mb_and_map(input_phs, test_data, polymath, randomize=False, repeat=False)
@@ -407,7 +408,7 @@ def test(test_data, model_path, model_file, config_file, gpu=0):
 if __name__=='__main__':
     # default Paths relative to current python file.
     abs_path   = os.path.dirname(os.path.abspath(__file__))
-    data_path  = os.path.join('..', 'data')
+    data_path  = os.path.join(abs_path, '.')
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-datadir', '--datadir', help='Data directory where the dataset is located', required=False, default=data_path)
@@ -435,6 +436,6 @@ if __name__=='__main__':
             train(data_path, model_path, args['logfile'], args['config'],
                 restore = args['restart'], model_name = test_model,
                 profiling = args['profile'],
-                gen_heartbeat = args['genheartbeat'])
+                gen_heartbeat = args['genheartbeat'], gpu=args['gpu'])
         finally:
             C.Communicator.finalize()
