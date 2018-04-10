@@ -1,6 +1,6 @@
 import cntk as C
 import numpy as np
-from polymath import BiDAFInd
+from polymath import BiDAFInd, BiDAF
 from rnetmodel import RNet
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 from helpers import print_para_info
@@ -160,7 +160,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
         lr_set= [(e,(rate**i)*lr_set) for i,e in enumerate(range(1, max_epochs, epoch))]
     lr = C.learning_parameter_schedule(lr_set, minibatch_size=None, epoch_size=None)
 
-    learner = C.adadelta(z.parameters, lr)
+    learner = C.adadelta(z.parameters, lr, 0.95, 1e-6)
 
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)

@@ -8,11 +8,11 @@ data_config = {
 }
 
 model_config = {
-    'hidden_dim'     	: 200,
-    'char_convs'     	: 200,
+    'hidden_dim'     	: 75,
+    'char_convs'     	: 75,
     'char_emb_dim'   	: 300,
     'word_emb_dim'      : 300,
-    'dropout'        	: 0.5,
+    'dropout'        	: 0.2,
     'highway_layers' 	: 2,
     'two_step'          : True,
     'use_cudnn'         : True,
@@ -21,9 +21,9 @@ model_config = {
 
 training_config = {
     'logdir'            : 'logs', # logdir for log outputs and tensorboard
-    'tensorboard_freq'  : 1, # tensorboard record frequence
-    'log_freq'          : 1,     # in minibatchs
-    'save_freq':60, # save checkpoint frequency
+    'tensorboard_freq'  : 100, # tensorboard record frequence
+    'log_freq'          : 100,     # in minibatchs
+    'save_freq':30, # save checkpoint frequency
     'train_data'        : 'train.ctf',  # or 'train.tsv'
     'val_data'          : 'dev.ctf',
     'val_interval'      : 30,       # interval in epochs to run validation
@@ -37,6 +37,6 @@ training_config = {
     'minibatch_size'    : 128,    # in samples when using ctf reader, per worker
     'epoch_size'        : 24325,   # in sequences, when using ctf reader
     'max_epochs'        : 300,
-    'lr'                : 0.1,
+    'lr'                : 1,
     'decay':{'epoch':100, 'rate':0.5}
     }

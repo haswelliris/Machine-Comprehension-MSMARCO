@@ -122,7 +122,7 @@ class BiDAF(PolyMath):
         embedded = C.splice(
             C.reshape(self.charcnn(input_chars), self.convs),
             self.word_glove()(input_glove_words, input_nonglove_words), name='splice_embed')
-        highway = HighwayNetwork(dim=2*self.hidden_dim, highway_layers=self.highway_layers)(embedded)
+        highway = HighwayNetwork(dim=self.word_emb_dim+self.convs, highway_layers=self.highway_layers)(embedded)
         highway_drop = C.layers.Dropout(self.dropout)(highway)
         processed = OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='input_rnn')(highway_drop)
 
