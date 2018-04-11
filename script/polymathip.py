@@ -24,13 +24,20 @@ class BiDAFSL(polymath.BiDAF):
         unpack_memory, mem_mask = C.sequence.unpack(cln_mem_ph, 0).outputs # [#][*=q, d], [#][*=q]
         unpack_inputs, inputs_mask = C.sequence.unpack(cln_inp_ph, 0).outputs # [#][*=c,d] [#][*=c]
         matrix = C.times_transpose(unpack_inputs, unpack_memory)/(self.hidden_dim**0.5) # [#][*=c,*=q]
-        over_q = C.transpose(C.times(C.transpose(unpack_inputs, matrix))) # [#][*=q,d]
-        over_c = C.times_transpose(matrix ,C.splice(unpack_memory, over_q, axis = 1)) # [#][*=c, 2d]
-        seq_over_c = C.sequence.gather(over_c, inputs_mask, cln_inp_ph.dymamic_axis) # [#, c][2*d]
+        over_q = C.transpose(C.times(C.transpose(unpack_inputs, matrix)))/(self.hidden_dim**0.5) # [#][*=q,d]
+        over_c = C.times_transpose(matrix ,over_q)/(self.hidden_dim**0.5) # [#][*=c, d]
+        seq_over_c = C.sequence.gather(over_c, inputs_mask, cln_inp_ph.dymamic_axes[1]) # [#, c][d]
+        q2c = seq_over_c.clone(C.CloneMethod.share, {cln_mem_ph: memory_, cln_inp_ph: inputs_}) # [#,c][d]
+        c2q = seq_over_c.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: memory_}) # [#,q][d]
+        c2c = seq_over_c.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: inputs_}) # [#,c][d]
+        att_context = C.splice(input_ph, q2c, c2c)
+        query_context = C.splice(input_mem, c2q)
 
-        seq_over_c.clone(C.CloneMethod.clone, {})
-
-
+        return C.as_block(
+            C.combine(att_context, query_context),
+            [(input_ph, context),(input_mem, query)],
+            'attention_layer','attention_layer'
+        )
 
     def build_model(self):
         c = C.Axis.new_unique_dynamic_axis('c')
@@ -51,5 +58,9 @@ class BiDAFSL(polymath.BiDAF):
 
         #input layer
         cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
+        # 2*hidden_dim
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+        # 6*hidden 4*hidden
+        att_context, att_query = self.attention_layer(c_processed, q_processed).outputs
 
+        context_summary, = self.encoder(att_context)
