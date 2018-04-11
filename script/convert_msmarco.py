@@ -30,7 +30,7 @@ def smith_waterman(tt,bb):
     def create_score_matrix(rows, cols, seq1, seq2):
         '''Create a matrix of scores representing trial alignments of the two sequences.
         Sequence alignment can be treated as a graph search problem. This function
-        creates a graph (2D matrix) of scores, which are based on trial alignments. 
+        creates a graph (2D matrix) of scores, which are based on trial alignments.
         The path with the highest cummulative score is the best alignment.
         '''
         score_matrix = np.zeros((rows,cols))
@@ -99,7 +99,7 @@ def smith_waterman(tt,bb):
 
     # Initialize the scoring matrix.
     score_matrix, start_pos = create_score_matrix(rows, cols, tt, bb)
-    
+
     # Traceback. Find the optimal path through the scoring matrix. This path
     # corresponds to the optimal local sequence alignment.
     (x,y), (w,z) = traceback(score_matrix, start_pos, tt, bb)
@@ -130,7 +130,7 @@ def convert(file, outfile, is_test):
             for i,line in enumerate(f):
                 j = json.loads(line.decode('utf-8'))
                 p = j['passages'] # candidate passages' list
-            
+
                 if j['query_type'] == 'description':
                     query   = preprocess(j['query']) # 问题
                     qtokens =  trim_empty(tokenize(query))

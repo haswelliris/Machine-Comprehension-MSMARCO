@@ -180,11 +180,10 @@ class BiDAF(PolyMath):
         c2c = C.reshape(C.reduce_sum(C.sequence.broadcast_as(hvw, hh_attn)*hh_attn, axis=0), (-1,))
 
         # 原始文档，题目表示，文章重点表示，匹配度表示，文章上下文表示
-        att_context_reg = C.splice(c_processed, c2q, q2c_out, c2c)
-        att_context_cls = C.splice(c_processed, c2q, q2c_out, c_processed*c2q)
-        res = C.combine([att_context_cls, att_context_reg])
+        # att_context_reg = C.splice(c_processed, c2q, q2c_out, c2c)
+        att_context = C.splice(c_processed, c2q, q2c_out, c_processed*c2q, c2c)
 
-        return C.as_block( res,
+        return C.as_block(att_context,
             [(c_processed, context), (q_processed, query)],
             'attention_layer',
             'attention_layer')
@@ -256,9 +255,8 @@ class BiDAF(PolyMath):
         qc = C.input_variable(self.word_size, dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
-        slc = C.sequence.input_variable(1, name='sl')
         input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
-                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae, 'sl':slc}
+                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
         self._input_phs = input_phs
 
         #input layer

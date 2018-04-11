@@ -48,7 +48,7 @@ def populate_dicts(files):
         for line in f:
             word = line.split()[0].lower()
             # polymath adds word to dict regardless of word_count_threshold when it's in GloVe
-            if wdcnt[word] >= 1 or test_wdcnt[word] >= 1: 
+            if wdcnt[word] >= 1 or test_wdcnt[word] >= 1:
                 _ = vocab[word]
     known =len(vocab)
 
@@ -72,7 +72,7 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
 
     if is_test:
         #uid, title, context, query = line.split('\t')
-        
+
         # change for dev.tsv
         uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer, select = line.strip().split('\t')
         answer = ''
@@ -101,15 +101,16 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
     if ba > ea and ea >= 0:
         raise ValueError('answer problem with input line:\n%s' % line)
 
+    # if word is on begin/end position
     baidx = [0 if i != ba else 1 for i,t in enumerate(ctokens)]
     eaidx = [0 if i != ea else 1 for i,t in enumerate(ctokens)]
-    
+
     atokens = answer.split(' ')
-    
+
     # change for enable is_selected
     # if not is_test and sum(eaidx) == 0:
     #     raise ValueError('problem with input line:\n%s' % line)
-    
+
     if is_test and misc.keys():
         misc['answer'] += [answer]
         misc['rawctx'] += [context]
