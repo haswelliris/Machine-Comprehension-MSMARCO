@@ -1,7 +1,8 @@
 # -*- coding:utf8
 import cntk as C
 import numpy as np
-from polymath import PolyMath
+from polymath import BiDAFInd, BiDAF
+from rnetmodel import RNet
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 from helpers import print_para_info
 import tsv2ctf
@@ -138,7 +139,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
     model_file = os.path.join(model_path, model_name)
 
     # training setting
-    polymath = PolyMath(config_file)
+    polymath = RNet(config_file)
     z, loss, input_phs = polymath.build_model()
 
     max_epochs = training_config['max_epochs']
@@ -166,7 +167,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
         lr_set= [(e,(rate**i)*lr_set) for i,e in enumerate(range(1, max_epochs, epoch))]
     lr = C.learning_parameter_schedule(lr_set, minibatch_size=None, epoch_size=None)
 
-    learner = C.adadelta(z.parameters, lr)
+    learner = C.adadelta(z.parameters, lr, 0.95, 1e-6)
 
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)
@@ -227,10 +228,6 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
                     data = mb_source.next_minibatch(minibatch_size*C.Communicator.num_workers(), input_map=input_map, num_data_partitions=C.Communicator.num_workers(), partition_index=C.Communicator.rank())
                 else:
                     data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
-
-                if epoch==0 and num_seq==0:
-                    df ,res = loss.forward(data, [loss.output],set([loss.output]))
-                    print('first eval:{}'.format(res))
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
                 if num_seq >= epoch_size:
@@ -260,6 +257,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
             if epoch+1 % training_config['save_freq']==0:
                 save_name = os.path.join(model_path,'{}_{}.ckp'.format(model_name,epoch))
                 print('[TRAIN] save checkpoint into {}'.format(save_name))
+                os.system('ls -al')
                 trainer.save_checkpoint(save_name)
             if not post_epoch_work(epoch_stat):
                 epoch_stat['epoch'] = epoch
@@ -285,6 +283,7 @@ def validate_model(test_data, polymath,config_file):
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
     loss         = polymath.loss
+    model = C.combine(begin_logits, end_logits, loss)
     input_phs = polymath.input_phs
     mb_source, input_map = create_mb_and_map(input_phs, test_data, polymath, randomize=False, repeat=False)
     begin_label = input_phs['ab']
@@ -435,7 +434,7 @@ def test(test_data, model_path, model_file, config_file, gpu=0):
 if __name__=='__main__':
     # default Paths relative to current python file.
     abs_path   = os.path.dirname(os.path.abspath(__file__))
-    data_path  = os.path.join('..', 'data')
+    data_path  = os.path.join(abs_path, '.')
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-datadir', '--datadir', help='Data directory where the dataset is located', required=False, default=data_path)
@@ -463,6 +462,6 @@ if __name__=='__main__':
             train(data_path, model_path, args['logfile'], args['config'],
                 restore = args['restart'], model_name = test_model,
                 profiling = args['profile'],
-                gen_heartbeat = args['genheartbeat'])
+                gen_heartbeat = args['genheartbeat'], gpu=args['gpu'])
         finally:
             C.Communicator.finalize()
