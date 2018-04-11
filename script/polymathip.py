@@ -1,4 +1,5 @@
 import polymath
+from helpers import *
 
 import cntk as C
 from cntk.layers import *
@@ -9,6 +10,7 @@ class BiDAFSL(polymath.BiDAF):
         data_config = importlib.import_module(config_file).data_config
         model_config = importlib.import_module(config_file).model_config
         self.loss_lambda = model_config['loss_lambda']
+        self._metric = None
     def attention_layer(self, context, query):
         input_ph = C.placeholder(shape=(2*self.hidden_dim,))
         input_mem = C.placeholder(shape=(2*self.hidden_dim,))
@@ -38,6 +40,19 @@ class BiDAFSL(polymath.BiDAF):
             [(input_ph, context),(input_mem, query)],
             'attention_layer','attention_layer'
         )
+    def encoder(self, doc1, doc2):
+        doc1_ph = C.placeholder()
+        doc2_ph = C.placeholder()
+        proj_doc1 = Dense(self.hidden_dim)(doc1_ph)
+        proj_doc2 = Dense(self.hidden_dim)(doc2_ph)
+        birnn = OptimizedRnnStack(self.hidden_dim,bidirectional=True)
+        summary1 = C.sequence.last(birnn(proj_doc1))
+        summary2 = C.sequence.last(birnn(proj_doc2))
+        return C.as_block(
+            C.combine(summary1, summary2),
+            [(doc1_ph, doc1),(doc2_ph, doc2)],
+            'encoder', 'encoder'
+        )
 
     def build_model(self):
         c = C.Axis.new_unique_dynamic_axis('c')
@@ -62,5 +77,29 @@ class BiDAFSL(polymath.BiDAF):
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
         # 6*hidden 4*hidden
         att_context, att_query = self.attention_layer(c_processed, q_processed).outputs
+        
+        context_summary, query_summary= self.encoder(att_context, att_query).outputs
+        cls_logits = Dense(1, activation=C.sigmoid)(C.splice(context_summary, query_summary))
+        cls_loss = my_cross_entropy(cls_logits, slc)
 
-        context_summary, = self.encoder(att_context)
+        mod_context = self.modeling_layer(att_context)
+        start_logits, end_logits = self.output_layer(mod_context)
+        # span loss [#][1] + cls loss [#][1]
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc + C.constant(self.loss_lambda)*cls_loss
+        metric = C.classification_error(cls_logits, slc)
+        res = C.combine([start_logits, end_logits, cls_logits])
+
+        self._model = res
+        self._loss = new_loss
+        self._metric = metric
+        return self._model, self._loss, self._input_phs
+    @property
+    def metric(self):
+        if not self._metric:
+            self.build_model()
+        return self._metric
+
+def my_cross_entropy(logits, labels):
+    one = C.constant(1.0, name='one')
+    loss = -C.constant(1.5)*labels*C.log(logits)-C.constant(0.5)*(one-labels)*C.log(one-logits)
+    return loss

@@ -188,13 +188,11 @@ class BiDAF(PolyMath):
             'attention_layer',
             'attention_layer')
 
-    def modeling_layer(self, attention_context_cls, attention_context_reg):
-    #def modeling_layer(self, attention_context_reg):
+    def modeling_layer(self, attention_context_reg):
         '''
         在第一遍阅读后，对文章的整体表示
         '''
         ph1 = C.placeholder(shape=(8*self.hidden_dim,))
-        ph2 = C.placeholder(shape=(8*self.hidden_dim,))
 
         att_context = C.placeholder(shape=(8*self.hidden_dim,))
         mod_context = C.layers.Sequential([
@@ -210,12 +208,11 @@ class BiDAF(PolyMath):
             C.layers.Dropout(self.dropout),
             C.layers.Dense(1, activation=C.sigmoid)])(att_context)
 
-        mod_out_cls = cls_context.clone(C.CloneMethod.share, {att_context: ph1})
-        mod_out_reg = mod_context.clone(C.CloneMethod.share, {att_context: ph2})
+        mod_out_reg = mod_context.clone(C.CloneMethod.share, {att_context: ph1})
 
         return C.as_block(
-            C.combine([mod_out_cls, mod_out_reg]),
-            [(ph1, attention_context_cls),(ph2, attention_context_reg)],
+            mod_out_reg,
+            [(ph1, attention_context_reg)],
             'modeling_layer',
             'modeling_layer')
 
@@ -263,25 +260,20 @@ class BiDAF(PolyMath):
         cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
         # attention layer output:[#,c][8*hidden_dim]
-        att_context_cls, att_context_reg = self.attention_layer(c_processed, q_processed).outputs
+        att_context_reg = self.attention_layer(c_processed, q_processed).outputs
 
         # modeling layer output:[#][2*hidden_dim] [#,c][2*hidden_dim]
-        mod_cls_logits,  mod_context_reg= self.modeling_layer(att_context_cls, att_context_reg).outputs
+        mod_context_reg= self.modeling_layer(att_context_reg)
 
         # output layer
         start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
 
         # loss
-        # 负数
-        slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
-        cls_loss = C.binary_cross_entropy(mod_cls_logits,slc, name='classify')
         # span loss [#][1] + cls loss [#][1]
-        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc + C.constant(10)*cls_loss
-        metric = C.classification_error(mod_cls_logits, slc)
-        res = C.combine([start_logits, end_logits, mod_cls_logits])
-        res.as_numpy=False
-        return res, cls_loss, metric
-
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
+        res = C.combine([start_logits, end_logits])
+        self._model = res
+        self._loss = new_loss
         return self._model, self._loss, self._input_phs
 
 
