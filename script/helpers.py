@@ -12,6 +12,16 @@ def print_para_info(dummy, ema):
 		pprint('{}:{}'.format(res[k], v))
 	print("===================")
 
+from pprint import pprint
+def print_para_info(dummy, ema):
+    '''
+    @dummy: the ops combines parameters
+    @ema: a dict  ops:(uid, shape)
+    '''
+    res = dummy.eval()
+    for k,v in ema.items():
+        pprint('{}:{}'.format(res[k], v))
+    print("===================")
 def OptimizedRnnStack(hidden_dim, num_layers=1, recurrent_op='gru', bidirectional=False, use_cudnn=True, name=''):
     if use_cudnn:
         W = C.parameter(_INFERRED + (hidden_dim,), init=C.glorot_uniform())
@@ -69,12 +79,19 @@ def all_spans_loss(start_logits, start_y, end_logits, end_y):
     x = C.layers.Recurrence(C.log_add_exp, go_backwards=True, initial_state=-1e+30)(end_logits)
     y = start_logits + x
     logZ = C.layers.Fold(C.log_add_exp, initial_state=-1e+30)(y)
-    return logZ - C.sequence.last(C.sequence.gather(start_logits, start_y)) - C.sequence.last(C.sequence.gather(end_logits, end_y))
+    # 使用元素相乘代替gather, 防止没有1的时候sequence.last出错
+    fst = C.sequence.reduce_sum((start_y*start_logits)+(end_y*end_logits))
+    #return logZ - C.sequence.last(C.sequence.gather(start_logits, start_y)) - C.sequence.last(C.sequence.gather(end_logits, end_y))
+    return logZ - fst
 
 def seq_hardmax(logits):
+    # [#][dim=1]
     seq_max = C.layers.Fold(C.element_max, initial_state=C.constant(-1e+30, logits.shape))(logits)
+    # [#,c][dim] 找到最大单词的位置
     s = C.equal(logits, C.sequence.broadcast_as(seq_max, logits))
+    # [#,c][dim] 找到第一个出现的最大单词的位置
     s_acc = C.layers.Recurrence(C.plus)(s)
+    # 除了最大单词为其logits外，其他都为0
     return s * C.equal(s_acc, 1) # only pick the first one
 
 class LambdaFunc(C.ops.functions.UserFunction):

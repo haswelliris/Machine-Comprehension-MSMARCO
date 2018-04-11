@@ -32,6 +32,7 @@ class PolyMath(object):
         self.word_emb_dim = model_config['word_emb_dim']
         self.use_cudnn = model_config['use_cudnn']
         self.use_sparse = True
+        # self.ldb = model_config['lambda'] # 控制两个loss的平衡
 
         print('dropout', self.dropout)
         print('use_cudnn', self.use_cudnn)
@@ -145,22 +146,18 @@ class BiDAF(PolyMath):
         #convert query's sequence axis to static
         qvw, qvw_mask = C.sequence.unpack(q_processed, padding_value=0).outputs
 
-        # This part deserves some explanation
-        # It is the attention layer
-        # In the paper they use a 6 * dim dimensional vector
-        # here we split it in three parts because the different parts
-        # participate in very different operations
-        # so W * [h; u; h.* u] becomes w1 * h + w2 * u + w3 * (h.*u)
+        # so W * [h; u; h.* u] becomes w1 * h + w2 * u + w4 * (h.*u)
         ws1 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
         ws2 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
-        ws3 = C.parameter(shape=(1, 2 * self.hidden_dim), init=C.glorot_uniform())
+        ws3 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
+        ws4 = C.parameter(shape=(1, 2 * self.hidden_dim), init=C.glorot_uniform())
         att_bias = C.parameter(shape=(), init=0)
 
-        wh = C.times (c_processed, ws1)
-        wu = C.reshape(C.times (qvw, ws2), (-1,))
-        whu = C.reshape(C.reduce_sum(c_processed * C.sequence.broadcast_as(qvw * ws3, c_processed), axis=1), (-1,))
-        S = wh + whu + C.sequence.broadcast_as(wu, c_processed) + att_bias
-        # mask out values outside of Query, and fill in gaps with -1e+30 as neutral value for both reduce_log_sum_exp and reduce_max
+        wh = C.times (c_processed, ws1) # [#,c][1]
+        wu = C.reshape(C.times (qvw, ws2), (-1,)) # [#][*]
+        # qvw*ws4: [#][*,200], whu:[#,c][*]
+        whu = C.reshape(C.reduce_sum(c_processed * C.sequence.broadcast_as(qvw * ws4, c_processed), axis=1), (-1,))
+        S1 = wh + C.sequence.broadcast_as(wu, c_processed) + att_bias # [#,c][*]
         qvw_mask_expanded = C.sequence.broadcast_as(qvw_mask, c_processed)
         S = C.element_select(qvw_mask_expanded, S, C.constant(-1e+30))
         q_attn = C.reshape(C.softmax(S), (-1,1))
@@ -174,38 +171,68 @@ class BiDAF(PolyMath):
         q2c = C.sequence.broadcast_as(htilde, c_processed)
         q2c_out = c_processed * q2c
 
-        att_context = C.splice(c_processed, c2q, c_processed * c2q, q2c_out)
+        hvw, hvw_mask = C.sequence.unpack(c_processed, padding_value=0).outputs
+        whh = C.reshape(C.times(c_processed, ws3),(-1,)) # [#][*,1]
+        S2 = wh + C.sequence.broadcast_as(whh, c_processed) + att_bias
+        hvw_mask_expanded = C.sequence.broadcast_as(hvw_mask, c_processed)
+        S2 = C.element_select(hvw_mask_expanded, S2, C.constant(-1e+30))
+        hh_attn = C.reshape(C.softmax(S2), (-1,1))
+        c2c = C.reshape(C.reduce_sum(C.sequence.broadcast_as(hvw, hh_attn)*hh_attn, axis=0), (-1,))
 
-        return C.as_block(
-            att_context,
+        # 原始文档，题目表示，文章重点表示，匹配度表示，文章上下文表示
+        att_context_reg = C.splice(c_processed, c2q, q2c_out, c2c)
+        att_context_cls = C.splice(c_processed, c2q, q2c_out, c_processed*c2q)
+        res = C.combine([att_context_cls, att_context_reg])
+
+        return C.as_block( res,
             [(c_processed, context), (q_processed, query)],
             'attention_layer',
             'attention_layer')
 
-    def modeling_layer(self, attention_context):
+    def modeling_layer(self, attention_context_cls, attention_context_reg):
+    #def modeling_layer(self, attention_context_reg):
+        '''
+        在第一遍阅读后，对文章的整体表示
+        '''
+        ph1 = C.placeholder(shape=(8*self.hidden_dim,))
+        ph2 = C.placeholder(shape=(8*self.hidden_dim,))
+
         att_context = C.placeholder(shape=(8*self.hidden_dim,))
-        #modeling layer
-        # todo: use dropout in optimized_rnn_stack from cudnn once API exposes it
         mod_context = C.layers.Sequential([
             C.layers.Dropout(self.dropout),
             OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn0'),
             C.layers.Dropout(self.dropout),
             OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn1')])(att_context)
+        cls_context = C.layers.Sequential([
+            C.layers.Dropout(self.dropout),
+            OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn2'),
+            C.layers.Dropout(self.dropout), C.sequence.last,
+            C.layers.Dense(100, activation=C.relu),
+            C.layers.Dropout(self.dropout),
+            C.layers.Dense(1, activation=C.sigmoid)])(att_context)
+
+        mod_out_cls = cls_context.clone(C.CloneMethod.share, {att_context: ph1})
+        mod_out_reg = mod_context.clone(C.CloneMethod.share, {att_context: ph2})
 
         return C.as_block(
-            mod_context,
-            [(att_context, attention_context)],
+            C.combine([mod_out_cls, mod_out_reg]),
+            [(ph1, attention_context_cls),(ph2, attention_context_reg)],
             'modeling_layer',
             'modeling_layer')
 
     def output_layer(self, attention_context, modeling_context):
         att_context = C.placeholder(shape=(8*self.hidden_dim,))
         mod_context = C.placeholder(shape=(2*self.hidden_dim,))
-        #output layer [#,c][1]
+        #output layer
+        # 映射 [#,c][1]
         start_logits = C.layers.Dense(1, name='out_start')(C.dropout(C.splice(mod_context, att_context), self.dropout))
-
-        start_hardmax = seq_hardmax(start_logits) # [000010000]
-        att_mod_ctx = C.sequence.last(C.sequence.gather(mod_context, start_hardmax)) # [#][2*hidden_dim]
+        if self.two_step:
+            start_hardmax = seq_hardmax(start_logits)
+            # 得到最大单词的语义表示 [#][dim]
+            att_mod_ctx = C.sequence.last(C.sequence.gather(mod_context, start_hardmax))
+        else:
+            start_prob = C.softmax(start_logits)
+            att_mod_ctx = C.sequence.reduce_sum(mod_context * start_prob)
         att_mod_ctx_expanded = C.sequence.broadcast_as(att_mod_ctx, att_context)
         end_input = C.splice(att_context, mod_context, att_mod_ctx_expanded, mod_context * att_mod_ctx_expanded) # [#, c][14*hidden_dim]
         m2 = OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='output_rnn')(end_input)
@@ -225,33 +252,38 @@ class BiDAF(PolyMath):
         cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
         qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
         qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
-        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
-        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        cc = C.input_variable(self.word_size, dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable(self.word_size, dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        slc = C.sequence.input_variable(1, name='sl')
         input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
-                        'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
+                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae, 'sl':slc}
         self._input_phs = input_phs
 
         #input layer
+        cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+        # attention layer output:[#,c][8*hidden_dim]
+        att_context_cls, att_context_reg = self.attention_layer(c_processed, q_processed).outputs
 
-        # attention layer
-        att_context = self.attention_layer(c_processed, q_processed)
-
-        # modeling layer
-        mod_context = self.modeling_layer(att_context)
+        # modeling layer output:[#][2*hidden_dim] [#,c][2*hidden_dim]
+        mod_cls_logits,  mod_context_reg= self.modeling_layer(att_context_cls, att_context_reg).outputs
 
         # output layer
-        start_logits, end_logits = self.output_layer(att_context, mod_context).outputs
+        start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
 
         # loss
-        start_loss = seq_loss(start_logits, ab)
-        end_loss = seq_loss(end_logits, ae)
-        #paper_loss = start_loss + end_loss
-        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
-        self._model = C.combine([start_logits,end_logits])
-        self._loss = new_loss
+        # 负数
+        slc = C.reshape(C.sequence.last(slc),(-1,)) # [#][1]
+        cls_loss = C.binary_cross_entropy(mod_cls_logits,slc, name='classify')
+        # span loss [#][1] + cls loss [#][1]
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc + C.constant(10)*cls_loss
+        metric = C.classification_error(mod_cls_logits, slc)
+        res = C.combine([start_logits, end_logits, mod_cls_logits])
+        res.as_numpy=False
+        return res, cls_loss, metric
+
         return self._model, self._loss, self._input_phs
 
 

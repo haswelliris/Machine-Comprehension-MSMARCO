@@ -74,13 +74,13 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
         #uid, title, context, query = line.split('\t')
         
         # change for dev.tsv
-        uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer = line.split('\t')
+        uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer, select = line.strip().split('\t')
         answer = ''
         begin_answer, end_answer = '0', '1'
         # change for dev.tsv
         raw_answer = ''
     else:
-        uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer = line.split('\t')
+        uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer, select = line.strip().split('\t')
         #uid, title, context, query, begin_answer, end_answer, answer = line.split('\t')
 
     ctokens = context.split(' ')
@@ -96,8 +96,9 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
     ccids = [[chars.get(c, unk_c) for c in t][:word_size] for t in ctokens] #clamp at word_size
     qcids = [[chars.get(c, unk_c) for c in t][:word_size] for t in qtokens]
 
+
     ba, ea = int(begin_answer), int(end_answer) - 1 # the end from tsv is exclusive
-    if ba > ea:
+    if ba > ea and ea >= 0:
         raise ValueError('answer problem with input line:\n%s' % line)
 
     baidx = [0 if i != ba else 1 for i,t in enumerate(ctokens)]
@@ -105,25 +106,26 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
     
     atokens = answer.split(' ')
     
-    if not is_test and sum(eaidx) == 0:
-        raise ValueError('problem with input line:\n%s' % line)
+    # change for enable is_selected
+    # if not is_test and sum(eaidx) == 0:
+    #     raise ValueError('problem with input line:\n%s' % line)
     
     if is_test and misc.keys():
         misc['answer'] += [answer]
         misc['rawctx'] += [context]
         misc['ctoken'] += [ctokens]
 
-    return ctokens, qtokens, atokens, cwids, qwids, baidx, eaidx, ccids, qcids
+    return ctokens, qtokens, atokens, cwids, qwids, baidx, eaidx, ccids, qcids, [select]
 
 def tsv_to_ctf(f, g, vocab, chars, is_test):
     print("Known words: %d" % known)
     print("Vocab size: %d" % len(vocab))
     print("Char size: %d" % len(chars))
     for lineno, line in enumerate(f):
-        ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids = tsv_iter(line, vocab, chars, is_test)
+        ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids, selections = tsv_iter(line, vocab, chars, is_test)
 
-        for     ctoken,  qtoken,  atoken,  cwid,  qwid,   begin,   end,   ccid,  qcid in zip_longest(
-                ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids):
+        for     ctoken,  qtoken,  atoken,  cwid,  qwid,   begin,   end,   ccid,  qcid, selection in zip_longest(
+                ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids, selections):
             out = [str(lineno)]
             if ctoken is not None:
                 out.append('|# %s' % pad_spec.format(ctoken.translate(sanitize)))
@@ -155,6 +157,8 @@ def tsv_to_ctf(f, g, vocab, chars, is_test):
             if qcid is not None:
                 outq = ' '.join(['%d' % c for c in qcid+[0]*max(word_size - len(qcid), 0)])
                 out.append('|qc %s' % outq)
+            if selection is not None:
+                out.append('|sl %s' % selection)
             g.write('\t'.join(out))
             g.write('\n')
 

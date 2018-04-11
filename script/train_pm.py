@@ -1,3 +1,4 @@
+# -*- coding:utf8
 import cntk as C
 import numpy as np
 from polymath import PolyMath
@@ -46,8 +47,9 @@ def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=Tru
                 answer_begin     = C.io.StreamDef('ab',  shape=polymath.a_dim,      is_sparse=False),
                 answer_end       = C.io.StreamDef('ae',  shape=polymath.a_dim,      is_sparse=False),
                 context_chars    = C.io.StreamDef('cc',  shape=polymath.word_size,  is_sparse=False),
-                query_chars      = C.io.StreamDef('qc',  shape=polymath.word_size,  is_sparse=False))),
-        randomize=randomize,
+                query_chars      = C.io.StreamDef('qc',  shape=polymath.word_size,  is_sparse=False),
+                is_selected = C.io.StreamDef('sl', shape=1, is_sparse=False))),
+        randomize=randomize, randomization_window_in_chunks=1024, randomization_window_in_samples=0,
         max_sweeps=C.io.INFINITELY_REPEAT if repeat else 1)
 
     input_map = {
@@ -58,7 +60,8 @@ def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=Tru
         input_phs['cc']: mb_source.streams.context_chars,
         input_phs['qc']: mb_source.streams.query_chars,
         input_phs['ab']: mb_source.streams.answer_begin,
-        input_phs['ae']: mb_source.streams.answer_end
+        input_phs['ae']: mb_source.streams.answer_end,
+        input_phs['sl']: mb_source.streams.is_selected
     }
     return mb_source, input_map
 
@@ -70,7 +73,7 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
             batch_count += 1
             batch={'cwids':[], 'qwids':[], 'baidx':[], 'eaidx':[], 'ccids':[], 'qcids':[]}
 
-            while not eof and len(batch['cwids']) < seqs:
+            while not eof and len(batch['cwids']) < seqs: # 读取batch
                 line = f.readline()
                 if not line:
                     eof = True
@@ -80,7 +83,7 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                     import re
                     misc['uid'].append(re.match('^([^\t]*)', line).groups()[0])
 
-                ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
+                ctokens, qtokens, atokens, cwids, qwids,  baidx, eaidx, ccids, qcids, select = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
 
                 batch['cwids'].append(cwids)
                 batch['qwids'].append(qwids)
@@ -88,6 +91,7 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                 batch['eaidx'].append(eaidx)
                 batch['ccids'].append(ccids)
                 batch['qcids'].append(qcids)
+                batch['select'].append(select)
 
             if len(batch['cwids']) > 0:
                 context_g_words  = C.Value.one_hot([[C.Value.ONE_HOT_SKIP if i >= polymath.wg_dim else i for i in cwids] for cwids in batch['cwids']], polymath.wg_dim)
@@ -98,15 +102,18 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                 query_chars   = [np.asarray([[[c for c in qc+[0]*max(0,polymath.word_size-len(qc))]] for qc in qcid], dtype=np.float32) for qcid in batch['qcids']]
                 answer_begin = [np.asarray(ab, dtype=np.float32) for ab in batch['baidx']]
                 answer_end   = [np.asarray(ae, dtype=np.float32) for ae in batch['eaidx']]
+                select = [np.asarray(ss,dtype=np.float32) for ss in batch['select']]
 
-                yield {  input_phs['cgw']:context_g_words,
-                         input_phs['qgw']:query_g_words,
-                         input_phs['cnw']:context_ng_words,
-                         input_phs['qnw']:query_ng_words,
-                         input_phs['cc']:context_chars,
-                         input_phs['qc']:query_chars,
-                         input_phs['ab']:answer_begin,
-                         input_phs['ae']:answer_end }
+                yield {input_phs['cgw']:context_g_words,
+                       input_phs['qgw']:query_g_words,
+                       input_phs['cnw']:context_ng_words,
+                       input_phs['qnw']:query_ng_words,
+                       input_phs['cc']:context_chars,
+                       input_phs['qc']:query_chars,
+                       input_phs['ab']:answer_begin,
+                       input_phs['ae']:answer_end,
+                       input_phs['sl']: select
+                       }
             else:
                 yield {} # need to generate empty batch for distributed training
 from pprint import pprint
@@ -164,7 +171,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)
 
-    trainer = C.Trainer(z, (loss, None), learner, progress_writers)
+    trainer = C.Trainer(z, (loss, metric), learner, progress_writers)
 
     if profiling:
         C.debugging.start_profiler(sync_gpu=True)
@@ -176,7 +183,8 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
         'best_since'   : 0,
         'val_since'    : 0,
         'record_num'   : 0,
-        'epoch':0}
+        'epoch':0
+    }
 
     if restore and os.path.isfile(model_file+'.ckp'):
         trainer.restore_from_checkpoint(model_file+'.ckp')
@@ -195,7 +203,9 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
             else:
                 epoch_stat['best_since'] += 1
                 if epoch_stat['best_since'] > training_config['stop_after']:
-                    return False
+                    # change for train
+                    print('best since>stop after')
+                    #return False
 
         if profiling:
             C.debugging.enable_profiler()
@@ -204,9 +214,11 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
 
     if train_data_ext == '.ctf':
         mb_source, input_map = create_mb_and_map(input_phs, train_data_file, polymath)
-
         minibatch_size = training_config['minibatch_size'] # number of samples
         epoch_size = training_config['epoch_size']
+        # data = mb_source.next_minibatch(minibatch_size,input_map=input_map)
+        # res = model.eval(data)
+        # print('first eval:', res)
 
         for epoch in range(max_epochs):
             num_seq = 0
@@ -216,6 +228,9 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
                 else:
                     data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
 
+                if epoch==0 and num_seq==0:
+                    df ,res = loss.forward(data, [loss.output],set([loss.output]))
+                    print('first eval:{}'.format(res))
                 trainer.train_minibatch(data)
                 num_seq += trainer.previous_minibatch_sample_count
                 if num_seq >= epoch_size:
@@ -259,8 +274,10 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
     model.save(model_file+'.model')
 
 def symbolic_best_span(begin, end):
-    running_max_begin = C.layers.Recurrence(C.element_max, initial_state=-float("inf"))(begin)
-    return C.layers.Fold(C.element_max, initial_state=C.constant(-1e+30))(running_max_begin + end)
+    # 获得当前最大值，作为begin+end的预测分数
+    max_begin = C.layers.Fold(C.element_max, initial_state=-float("inf"))(begin)
+    max_end = C.layers.Fold(C.element_max, initial_state=-float("inf"))(end)
+    return max_begin+max_end # [#][1]
 
 def validate_model(test_data, polymath,config_file):
     print("start validate")
@@ -276,6 +293,7 @@ def validate_model(test_data, polymath,config_file):
     # input placeholder of 2 usage
     begin_prediction = C.sequence.input_variable(1, sequence_axis=begin_label.dynamic_axes[1], needs_gradient=True)
     end_prediction = C.sequence.input_variable(1, sequence_axis=end_label.dynamic_axes[1], needs_gradient=True)
+    cls_prediction = C.input_variable(1)
 
     # max position has gradient 1
     best_span_score = symbolic_best_span(begin_prediction, end_prediction)
@@ -306,11 +324,12 @@ def validate_model(test_data, polymath,config_file):
     stat_sum = 0
     loss_sum = 0
 
+
     while True:
         data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
         if not data or not (begin_label in data) or data[begin_label].num_sequences == 0:
             break
-        out = model.eval(data, outputs=[begin_logits,end_logits,loss], as_numpy=False)
+        out = model.eval(data, outputs=[begin_logits,end_logits,cls_score,loss], as_numpy=False)
         testloss = out[loss]
         g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
         other_input_map = {begin_prediction: g[begin_prediction], end_prediction: g[end_prediction], begin_label: data[begin_label], end_label: data[end_label]}
@@ -372,11 +391,14 @@ def test(test_data, model_path, model_file, config_file, gpu=0):
     model = C.load_model(os.path.join(model_path, model_file))
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
-    loss         = C.as_composite(model.outputs[2].owner)
+    cls_scores   = model.outputs[2]
+    loss         = C.as_composite(model.outputs[3].owner)
     begin_prediction = C.sequence.input_variable(1, sequence_axis=begin_logits.dynamic_axes[1], needs_gradient=True)
     end_prediction = C.sequence.input_variable(1, sequence_axis=end_logits.dynamic_axes[1], needs_gradient=True)
+    cls_prediction = C.input_variable(1) # [#][1]
     best_span_score = symbolic_best_span(begin_prediction, end_prediction)
-    predicted_span = C.layers.Recurrence(C.plus)(begin_prediction - C.sequence.past_value(end_prediction))
+    # 开始-0+0-结束=开始-结束 即长度
+    # predicted_span = C.layers.Recurrence(C.plus)(begin_prediction - C.sequence.past_value(end_prediction))
 
     batch_size = 32 # in sequences
     misc = {'rawctx':[], 'ctoken':[], 'answer':[], 'uid':[]}
@@ -385,11 +407,18 @@ def test(test_data, model_path, model_file, config_file, gpu=0):
     results = {}
     with open('{}_out.json'.format(model_file), 'w', encoding='utf-8') as json_output:
         for data in tsv_reader:
-            out = model.eval(data, outputs=[begin_logits,end_logits], as_numpy=False)
+            out = model.eval(data, outputs=[begin_logits,end_logits,cls_scores,loss], as_numpy=False)
+            # 计算正负例, 大于0.5为正
+            cls_res = C.greater(cls_prediction,C.constant(0.5)).eval({cls_prediction:out[cls_scores]}) # [#][1]
+            # 计算梯度，只有被选为最大的那2个位置梯度为1 # [#,c][1]
             g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
-            other_input_map = {begin_prediction: g[begin_prediction], end_prediction: g[end_prediction]}
-            span = predicted_span.eval((other_input_map))
+            begin_res, end_res = g[begin_prediction], g[end_prediction]
+            span = begin_res+end_res
+            print(span);return
+            # 去掉预测为负例的结果
             for seq, (raw_text, ctokens, answer, uid) in enumerate(zip(misc['rawctx'], misc['ctoken'], misc['answer'], misc['uid'])):
+                if cls_res[seq] <= 0:
+                    continue
                 seq_where = np.argwhere(span[seq])[:,0]
                 span_begin = np.min(seq_where)
                 span_end = np.max(seq_where)
