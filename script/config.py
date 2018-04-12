@@ -16,7 +16,8 @@ model_config = {
     'highway_layers' 	: 2,
     'two_step'          : True,
     'use_cudnn'         : True,
-    'use_layerbn'       : False
+    'use_layerbn'       : False,
+    'loss_lambda':2.0
 }
 
 training_config = {

@@ -3,6 +3,7 @@ from helpers import *
 
 import cntk as C
 from cntk.layers import *
+import importlib
 
 class BiDAFSL(polymath.BiDAF):
     def __init__(self, config_file):
@@ -21,19 +22,20 @@ class BiDAFSL(polymath.BiDAF):
         inputs_ = attn_proj_enc(input_ph) # [#,c][d]
         memory_ = attn_proj_dec(input_mem) # [#,q][d]
 
-        cln_mem_ph = C.placeholder(shape=(self.hidden_dim, ))
-        cln_inp_ph = C.placeholder(shape=(self.hidden_dim, ))
-        unpack_memory, mem_mask = C.sequence.unpack(cln_mem_ph, 0).outputs # [#][*=q, d], [#][*=q]
+        cln_mem_ph = C.placeholder() # [#,q][?]
+        cln_inp_ph = C.placeholder() # [#,c][?]
         unpack_inputs, inputs_mask = C.sequence.unpack(cln_inp_ph, 0).outputs # [#][*=c,d] [#][*=c]
-        matrix = C.times_transpose(unpack_inputs, unpack_memory)/(self.hidden_dim**0.5) # [#][*=c,*=q]
-        over_q = C.transpose(C.times(C.transpose(unpack_inputs, matrix)))/(self.hidden_dim**0.5) # [#][*=q,d]
-        over_c = C.times_transpose(matrix ,over_q)/(self.hidden_dim**0.5) # [#][*=c, d]
-        seq_over_c = C.sequence.gather(over_c, inputs_mask, cln_inp_ph.dymamic_axes[1]) # [#, c][d]
-        q2c = seq_over_c.clone(C.CloneMethod.share, {cln_mem_ph: memory_, cln_inp_ph: inputs_}) # [#,c][d]
-        c2q = seq_over_c.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: memory_}) # [#,q][d]
+        matrix = C.times_transpose(cln_mem_ph, unpack_inputs)/(self.hidden_dim**0.5) # [#,q][*=c]
+        expand_inputs = C.sequence.broadcast_as(unpack_inputs, cln_mem_ph) # [#,q][*=c,d]
+        trans_expand_inputs = C.transpose(expand_inputs,[1,0]) # [#,q][d,*=c]
+        q_over_c = C.reshape(C.reduce_sum(matrix*trans_expand_inputs,axis=1),(-1,))/(self.hidden_dim**0.5) # [#,q][d]
+
+        weighted_c = q_over_c.clone(C.CloneMethod.share, {cln_mem_ph: memory_, cln_inp_ph: inputs_}) # [#,q][d]
+        weighted_q = q_over_c.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: memory_}) # [#,c][d]
         c2c = seq_over_c.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: inputs_}) # [#,c][d]
-        att_context = C.splice(input_ph, q2c, c2c)
-        query_context = C.splice(input_mem, c2q)
+        
+        att_context = C.splice(input_ph, weighted_q, c2c)
+        query_context = C.splice(input_mem, weighted_c)
 
         return C.as_block(
             C.combine(att_context, query_context),

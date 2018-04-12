@@ -2,6 +2,7 @@
 import cntk as C
 import numpy as np
 from polymath import BiDAFInd, BiDAF
+from polymathip import BiDAFSL
 from rnetmodel import RNet
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 from helpers import print_para_info
@@ -139,8 +140,9 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
     model_file = os.path.join(model_path, model_name)
 
     # training setting
-    polymath = RNet(config_file)
+    polymath = BiDAFSL(config_file)
     z, loss, input_phs = polymath.build_model()
+    metric = polymath.getattr('metric',None)
 
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']
