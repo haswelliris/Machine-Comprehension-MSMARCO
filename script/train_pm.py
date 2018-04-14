@@ -61,8 +61,8 @@ def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=Tru
         input_phs['qnw']: mb_source.streams.query_ng_words,
         input_phs['cc']: mb_source.streams.context_chars,
         input_phs['qc']: mb_source.streams.query_chars,
-        input_phs['ab']: mb_source.streams.answer_begin,
-        input_phs['ae']: mb_source.streams.answer_end,
+        #input_phs['ab']: mb_source.streams.answer_begin,
+        #input_phs['ae']: mb_source.streams.answer_end,
         input_phs['sl']: mb_source.streams.is_selected
     }
     return mb_source, input_map
@@ -167,10 +167,10 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
         rate = training_config['decay']['rate']
         epoch = training_config['decay']['epoch']
         lr_set= [(e,(rate**i)*lr_set) for i,e in enumerate(range(1, max_epochs, epoch))]
-    lr = C.learning_parameter_schedule(lr_set, minibatch_size=None, epoch_size=None)
+    lr = C.learning_parameter_schedule(lr_set, minibatch_size=training_config['minibatch_size'], epoch_size=training_config['epoch_size'])
 
-    learner = C.adadelta(z.parameters, lr, 0.95, 1e-6)
-
+    # learner = C.adadelta(z.parameters, lr, 0.95, 1e-6)
+    learner = C.adam(z.parameters, lr, 0.9)
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)
 
@@ -219,10 +219,9 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
         mb_source, input_map = create_mb_and_map(input_phs, train_data_file, polymath)
         minibatch_size = training_config['minibatch_size'] # number of samples
         epoch_size = training_config['epoch_size']
-        # data = mb_source.next_minibatch(minibatch_size,input_map=input_map)
+        # data = mb_source.next_minibatch(1024,input_map=input_map)
         # res = model.eval(data)
         # print('first eval:', res)
-
         for epoch in range(max_epochs):
             num_seq = 0
             while True:

@@ -135,8 +135,9 @@ def convert(file, outfile, is_test):
                     qtokens =  trim_empty(tokenize(query))
                     for pp in p: # 对每一篇候选文章
                         context = preprocess(pp['passage_text'])
-                        context = '<s>'+context+'</s>' # add for begin/end
-                        ctokens = trim_empty(tokenize(context, context_mode=True))
+                        context = context 
+                        ctokens = trim_empty(tokenize(context, context_mode=True)) # add for begin/end
+                        ctokens = ['<s>']+ctokens+['</s>']
                         normalized_context = ' '.join(ctokens)
                         nctokens = normalized_context.split()
                         if not is_test:
