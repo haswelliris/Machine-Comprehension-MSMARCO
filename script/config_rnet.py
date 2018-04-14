@@ -8,11 +8,11 @@ data_config = {
 }
 
 model_config = {
-    'hidden_dim'     	: 100,
-    'char_convs'     	: 100,
+    'hidden_dim'     	: 75,
+    'char_convs'     	: 75,
     'char_emb_dim'   	: 300,
     'word_emb_dim'      : 300,
-    'dropout'        	: 0.5,
+    'dropout'        	: 0.2,
     'highway_layers' 	: 2,
     'two_step'          : True,
     'use_cudnn'         : True,
@@ -36,7 +36,7 @@ training_config = {
     # training hyperparameters
     'minibatch_size'    : 4096,    # in samples when using ctf reader, per worker
     'epoch_size'        : 2000000,   # in sequences, when using ctf reader
-    'max_epochs'        : 100,
-    'lr'                : 0.1,
-    'decay':{'epoch':30, 'rate':0.5}
+    'max_epochs'        : 300,
+    'lr'                : 1,
+    'decay':{}
     }

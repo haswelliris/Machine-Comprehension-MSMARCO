@@ -132,7 +132,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
     model_file = os.path.join(model_path, model_name)
 
     # training setting
-    polymath = RNet(config_file)
+    polymath = BiDAFInd(config_file)
     z, loss, input_phs = polymath.build_model()
 
     max_epochs = training_config['max_epochs']
@@ -158,7 +158,8 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
         rate = training_config['decay']['rate']
         epoch = training_config['decay']['epoch']
         lr_set= [(e,(rate**i)*lr_set) for i,e in enumerate(range(1, max_epochs, epoch))]
-    lr = C.learning_parameter_schedule(lr_set, minibatch_size=None, epoch_size=None)
+        print('learning rate set:{}'.format(lr_set))
+    lr = C.learning_parameter_schedule(lr_set, minibatch_size=training_config['minibatch_size'], epoch_size=training_config['epoch_size'])
 
     learner = C.adadelta(z.parameters, lr, 0.95, 1e-6)
 
@@ -242,9 +243,9 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
                     trainer.train_minibatch(data) # update model with it
                 minibatch_count += 1
             trainer.summarize_training_progress()
-            if epoch+1 % training_config['save_freq']==0:
-                save_name = os.path.join(model_path,'{}_{}.ckp'.format(model_name,epoch))
+            if epoch % training_config['save_freq']==0:
                 print('[TRAIN] save checkpoint into {}'.format(save_name))
+                save_name = os.path.join(model_path,'{}_{}.ckp'.format(model_name,epoch))
                 os.system('ls -al')
                 trainer.save_checkpoint(save_name)
             if not post_epoch_work(epoch_stat):
