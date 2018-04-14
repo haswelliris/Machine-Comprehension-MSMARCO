@@ -98,7 +98,7 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
 
 
     ba, ea = int(begin_answer), int(end_answer) - 1 # the end from tsv is exclusive
-    if ba > ea and ea >= 0:
+    if ba > ea:
         raise ValueError('answer problem with input line:\n%s' % line)
 
     # if word is on begin/end position
@@ -108,8 +108,8 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
     atokens = answer.split(' ')
 
     # change for enable is_selected
-    # if not is_test and sum(eaidx) == 0:
-    #     raise ValueError('problem with input line:\n%s' % line)
+    if not is_test and sum(eaidx) == 0:
+        raise ValueError('problem with input line:\n%s' % line)
 
     if is_test and misc.keys():
         misc['answer'] += [answer]

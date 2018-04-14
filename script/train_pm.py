@@ -142,7 +142,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
     # training setting
     polymath = BiDAFSL(config_file)
     z, loss, input_phs = polymath.build_model()
-    metric = polymath.getattr('metric',None)
+    metric = getattr(polymath,'metric',None)
 
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']
@@ -330,7 +330,7 @@ def validate_model(test_data, polymath,config_file):
         data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
         if not data or not (begin_label in data) or data[begin_label].num_sequences == 0:
             break
-        out = model.eval(data, outputs=[begin_logits,end_logits,cls_score,loss], as_numpy=False)
+        out = model.eval(data, outputs=[begin_logits,end_logits,loss], as_numpy=False)
         testloss = out[loss]
         g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
         other_input_map = {begin_prediction: g[begin_prediction], end_prediction: g[end_prediction], begin_label: data[begin_label], end_label: data[end_label]}

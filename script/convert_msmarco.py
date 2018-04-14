@@ -105,7 +105,6 @@ def smith_waterman(tt,bb):
     (x,y), (w,z) = traceback(score_matrix, start_pos, tt, bb)
     return (x,w), (y,z), score_matrix[w][z]
 
-
 def preprocess(s):
     return s.replace("''", '" ').replace("``", '" ')
 
@@ -136,6 +135,7 @@ def convert(file, outfile, is_test):
                     qtokens =  trim_empty(tokenize(query))
                     for pp in p: # 对每一篇候选文章
                         context = preprocess(pp['passage_text'])
+                        context = '<s>'+context+'</s>' # add for begin/end
                         ctokens = trim_empty(tokenize(context, context_mode=True))
                         normalized_context = ' '.join(ctokens)
                         nctokens = normalized_context.split()
@@ -164,7 +164,7 @@ def convert(file, outfile, is_test):
                                     if not bad:
                                         output = [str(j['query_id']), j['query_type'], ' '.join(nctokens),' '.join(qtokens),' '.join(nctokens[start:end]), normalized_context, str(start), str(end), normalized_answer, '1']
                             else: # 不是候选答案的文章
-                                output = [str(j['query_id']), j['query_type'], ' '.join(nctokens),' '.join(qtokens),'<NULL>', normalized_context, '-1', '-1', '<NULL>', '0']
+                                output = [str(j['query_id']), j['query_type'], ' '.join(nctokens),' '.join(qtokens),'<s>', normalized_context, '0', '1', '<s>', '0']
                         else: # test
                             output = [str(j['query_id']), j['query_type'], ' '.join(nctokens),' '.join(qtokens)]
                         out.write("%s\n"%'\t'.join(output))

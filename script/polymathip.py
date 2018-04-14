@@ -13,8 +13,8 @@ class BiDAFSL(polymath.BiDAF):
         self.loss_lambda = model_config['loss_lambda']
         self._metric = None
     def attention_layer(self, context, query):
-        input_ph = C.placeholder(shape=(2*self.hidden_dim,))
-        input_mem = C.placeholder(shape=(2*self.hidden_dim,))
+        input_ph = C.placeholder()
+        input_mem = C.placeholder()
         with C.layers.default_options(bias=False, activation=C.relu):
             attn_proj_enc = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1, name="Wqu")
             attn_proj_dec = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1)
@@ -22,20 +22,30 @@ class BiDAFSL(polymath.BiDAF):
         inputs_ = attn_proj_enc(input_ph) # [#,c][d]
         memory_ = attn_proj_dec(input_mem) # [#,q][d]
 
-        cln_mem_ph = C.placeholder() # [#,q][?]
-        cln_inp_ph = C.placeholder() # [#,c][?]
+        cln_mem_ph = C.placeholder() # [#,q][?=d]
+        cln_inp_ph = C.placeholder() # [#,c][?=d]
         unpack_inputs, inputs_mask = C.sequence.unpack(cln_inp_ph, 0).outputs # [#][*=c,d] [#][*=c]
-        matrix = C.times_transpose(cln_mem_ph, unpack_inputs)/(self.hidden_dim**0.5) # [#,q][*=c]
         expand_inputs = C.sequence.broadcast_as(unpack_inputs, cln_mem_ph) # [#,q][*=c,d]
+        matrix = C.reshape(C.times_transpose(cln_mem_ph, expand_inputs)/(self.hidden_dim**0.5),(-1,)) # [#,q][*=c]
         trans_expand_inputs = C.transpose(expand_inputs,[1,0]) # [#,q][d,*=c]
         q_over_c = C.reshape(C.reduce_sum(matrix*trans_expand_inputs,axis=1),(-1,))/(self.hidden_dim**0.5) # [#,q][d]
+        new_q = C.splice(cln_mem_ph, q_over_c) # [#,q][2*d]
+        # over
+        unpack_matrix, matrix_mask = C.sequence.unpack(matrix,0).outputs # [#][*=q,*=c] [#][*=q]
+        inputs_mask_s = C.reshape(C.to_sequence(input_mask),(1,)) # [#,c'][1]
+        trans_matrix = C.to_sequence_like(C.transpose(unpack_matrix,[1,0]), inputs_mask_s # [#,c'][*=q]
+        trans_matrix = C.sequence.gather(trans_matrix, inputs_mask_s) # [#,c2][*=q]
+        unpack_new_q, new_q_mask = C.sequence.unpack(new_q,0).outputs # [#][*=q,2*d] [#][*=q]
+        expand_new_q = C.transpose(C.sequence.broadcast_as(unpack_new_q, trans_matrix),[1,0]) # [#,c2][2d,*=q]
+        c_over_q = C.reshape(C.reduce_sum(trans_matrix*expand_new_q, axis=1),(-1,))/(2*self.hidden_dim)**0.5 # [#,c2][2d]
+        c_over_q = C.reconcile_dynamic_axes(c_over_q, cln_inp_ph)
 
-        weighted_c = q_over_c.clone(C.CloneMethod.share, {cln_mem_ph: memory_, cln_inp_ph: inputs_}) # [#,q][d]
-        weighted_q = q_over_c.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: memory_}) # [#,c][d]
-        c2c = seq_over_c.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: inputs_}) # [#,c][d]
+        weighted_q = c_over_q.clone(C.CloneMethod.share, {cln_mem_ph: memory_, cln_inp_ph: inputs_}) # [#,q][2d]
+        weighted_c = c_over_q.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: memory_}) # [#,c][2d]
+        c2c = q_over_c.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: inputs_}) # [#,c][d]
         
-        att_context = C.splice(input_ph, weighted_q, c2c)
-        query_context = C.splice(input_mem, weighted_c)
+        att_context = C.splice(input_ph, weighted_q, c2c) # 2d+2d+d
+        query_context = C.splice(input_mem, weighted_c) # 2d+2d
 
         return C.as_block(
             C.combine(att_context, query_context),
@@ -55,6 +65,30 @@ class BiDAFSL(polymath.BiDAF):
             [(doc1_ph, doc1),(doc2_ph, doc2)],
             'encoder', 'encoder'
         )
+    def output_layer(self, attention_context, modeling_context):
+        att_context = C.placeholder()
+        mod_context = C.placeholder()
+        #output layer
+        # 映射 [#,c][1]
+        start_logits = C.layers.Dense(1, name='out_start')(C.dropout(C.splice(mod_context, att_context), self.dropout))
+        if self.two_step:
+            start_hardmax = seq_hardmax(start_logits)
+            # 得到最大单词的语义表示 [#][dim]
+            att_mod_ctx = C.sequence.last(C.sequence.gather(mod_context, start_hardmax))
+        else:
+            start_prob = C.softmax(start_logits)
+            att_mod_ctx = C.sequence.reduce_sum(mod_context * start_prob)
+        att_mod_ctx_expanded = C.sequence.broadcast_as(att_mod_ctx, att_context)
+        end_input = C.splice(att_context, mod_context, att_mod_ctx_expanded, mod_context * att_mod_ctx_expanded) # [#, c][14*hidden_dim]
+        m2 = OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='output_rnn')(end_input)
+        end_logits = C.layers.Dense(1, name='out_end')(C.dropout(C.splice(m2, att_context), self.dropout))
+
+        return C.as_block(
+            C.combine([start_logits, end_logits]),
+            [(att_context, attention_context), (mod_context, modeling_context)],
+            'output_layer',
+            'output_layer')
+
 
     def build_model(self):
         c = C.Axis.new_unique_dynamic_axis('c')
@@ -81,11 +115,12 @@ class BiDAFSL(polymath.BiDAF):
         att_context, att_query = self.attention_layer(c_processed, q_processed).outputs
         
         context_summary, query_summary= self.encoder(att_context, att_query).outputs
-        cls_logits = Dense(1, activation=C.sigmoid)(C.splice(context_summary, query_summary))
+        classifier = BatchNormalization() >> Dense(1,activation=C.sigmoid)
+        cls_logits = classifier(C.splice(context_summary, query_summary))
         cls_loss = my_cross_entropy(cls_logits, slc)
 
         mod_context = self.modeling_layer(att_context)
-        start_logits, end_logits = self.output_layer(mod_context)
+        start_logits, end_logits = self.output_layer(att_context,mod_context).outputs
         # span loss [#][1] + cls loss [#][1]
         new_loss = all_spans_loss(start_logits, ab, end_logits, ae)*slc + C.constant(self.loss_lambda)*cls_loss
         metric = C.classification_error(cls_logits, slc)
@@ -103,5 +138,5 @@ class BiDAFSL(polymath.BiDAF):
 
 def my_cross_entropy(logits, labels):
     one = C.constant(1.0, name='one')
-    loss = -C.constant(1.5)*labels*C.log(logits)-C.constant(0.5)*(one-labels)*C.log(one-logits)
+    loss = -C.constant(5)*labels*C.log(logits+1e-30)-(one-labels)*C.log(one-logits+1e-30)
     return loss
