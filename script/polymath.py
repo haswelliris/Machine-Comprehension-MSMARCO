@@ -183,7 +183,7 @@ class BiDAF(PolyMath):
             'attention_layer')
 
     def modeling_layer(self, attention_context):
-        att_context = C.placeholder(shape=(8*self.hidden_dim,))
+        att_context = C.placeholder()
         #modeling layer
         # todo: use dropout in optimized_rnn_stack from cudnn once API exposes it
         mod_context = C.layers.Sequential([
@@ -248,7 +248,6 @@ class BiDAF(PolyMath):
         # loss
         start_loss = seq_loss(start_logits, ab)
         end_loss = seq_loss(end_logits, ae)
-        #paper_loss = start_loss + end_loss
         new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
         self._model = C.combine([start_logits,end_logits])
         self._loss = new_loss
@@ -346,4 +345,50 @@ class BiDAFInd(BiDAF):
             'modeling_layer',
             'modeling_layer')
 
+
+class BiDAFCoA(BiDAF):
+    def __init__(self, config_file):
+       super(BiDAFCoA, self).__init__(config_file)
+    def attention_layer(self, context, query):
+        input_ph = C.placeholder(shape=(2*self.hidden_dim,))
+        input_mem = C.placeholder(shape=(2*self.hidden_dim,))
+        with C.layers.default_options(bias=False, activation=C.relu):
+            attn_proj_enc = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1, name="Wqu")
+            attn_proj_dec = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1)
+
+        inputs_ = attn_proj_enc(input_ph) # [#,c][d]
+        memory_ = attn_proj_dec(input_mem) # [#,q][d]
+
+        cln_mem_ph = C.placeholder() # [#,q][?=d]
+        cln_inp_ph = C.placeholder() # [#,c][?=d]
+        unpack_inputs, inputs_mask = C.sequence.unpack(cln_inp_ph, 0).outputs # [#][*=c,d] [#][*=c]
+        expand_inputs = C.sequence.broadcast_as(unpack_inputs, cln_mem_ph) # [#,q][*=c,d]
+        matrix = C.reshape(C.times_transpose(cln_mem_ph, expand_inputs)/(self.hidden_dim**0.5),(-1,)) # [#,q][*=c]
+        matrix = C.element_select(C.sequence.broadcast_as(inputs_mask,cln_mem_ph), matrix, C.constant(-1e30))
+        logits = C.softmax(matrix, axis=0, name='level 1 weight') # [#,q][*=c]
+        trans_expand_inputs = C.transpose(expand_inputs,[1,0]) # [#,q][d,*=c]
+        q_over_c = C.reshape(C.reduce_sum(logits*trans_expand_inputs,axis=1),(-1,))/(self.hidden_dim**0.5) # [#,q][d]
+        new_q = C.splice(cln_mem_ph, q_over_c) # [#,q][2*d]
+        # over
+        unpack_matrix, matrix_mask = C.sequence.unpack(matrix,0).outputs # [#][*=q,*=c] [#][*=q]
+        inputs_mask_s = C.to_sequence(C.reshape(inputs_mask,(-1,1))) # [#,c'][1]
+        trans_matrix = C.to_sequence_like(C.transpose(unpack_matrix,[1,0]), inputs_mask_s) # [#,c'][*=q]
+        trans_matrix = C.sequence.gather(trans_matrix, inputs_mask_s) # [#,c2][*=q]
+        trans_matrix = C.element_select(C.sequence.broadcast_as(matrix_mask, trans_matrix), trans_matrix, C.constant(-1e30))
+        logits2 = C.softmax(trans_matrix, axis=0, name='level 2 weight') # [#,c2][*=c]
+        unpack_new_q, new_q_mask = C.sequence.unpack(new_q,0).outputs # [#][*=q,2*d] [#][*=q]
+        expand_new_q = C.transpose(C.sequence.broadcast_as(unpack_new_q, trans_matrix),[1,0]) # [#,c2][2d,*=q]
+        c_over_q = C.reshape(C.reduce_sum(logits2*expand_new_q, axis=1),(-1,))/(2*self.hidden_dim)**0.5 # [#,c2][2d]
+        c_over_q = C.reconcile_dynamic_axes(c_over_q, cln_inp_ph)
+
+        weighted_q = c_over_q.clone(C.CloneMethod.share, {cln_mem_ph: memory_, cln_inp_ph: inputs_}) # [#,c][2d]
+        c2c = c_over_q.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: inputs_}) # [#,c][2d]
+
+        att_context = C.splice(input_ph, weighted_q, c2c) # 2d+2d+2d
+
+        return C.as_block(
+            att_context,
+            [(input_ph, context),(input_mem, query)],
+            'attention_layer','attention_layer'
+        )
 
