@@ -3,6 +3,7 @@
 *.ctf
 *.txt
 *.tsv
+script/output/models/*
 logs/*
 model
 __pycache__

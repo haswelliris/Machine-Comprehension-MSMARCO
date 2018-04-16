@@ -229,10 +229,19 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
                 if num_seq >= epoch_size:
                     break
             trainer.summarize_training_progress()
-            if epoch+1 % training_config['save_freq']==0:
+            if epoch % training_config['save_freq']==0:
                 save_name = os.path.join(model_path,'{}_{}'.format(model_name,epoch))
                 print('[TRAIN] save checkpoint into {}'.format(save_name))
-                trainer.save_checkpoint(save_name)
+                save_flag = True
+                while save_flag:
+                    os.system('ls -la  >> log.log')
+                    os.system('ls -la ./output/models >> log.log')
+                    try:
+                        trainer.save_checkpoint(save_name)
+                        save_flag = False
+                    except:
+                        print('IO error: try to save model again!')
+                        save_flag = True
             if not post_epoch_work(epoch_stat):
                 epoch_stat['epoch'] = epoch
                 break
@@ -252,7 +261,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
             trainer.summarize_training_progress()
             if epoch % training_config['save_freq']==0:
                 print('[TRAIN] save checkpoint into {}'.format(save_name))
-                save_name = os.path.join(model_path,'{}_{}.ckp'.format(model_name,epoch))
+                save_name = os.path.join(model_path,'{}_{}'.format(model_name,epoch))
                 os.system('ls -al')
                 trainer.save_checkpoint(save_name)
             if not post_epoch_work(epoch_stat):
