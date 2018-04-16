@@ -4,6 +4,7 @@ from helpers import *
 import pickle
 import importlib
 import os
+from cntk.initializer import glorot_uniform
 
 class PolyMath(object):
     def __init__(self, config_file):
@@ -199,8 +200,8 @@ class BiDAF(PolyMath):
             'modeling_layer')
 
     def output_layer(self, attention_context, modeling_context):
-        att_context = C.placeholder(shape=(8*self.hidden_dim,))
-        mod_context = C.placeholder(shape=(2*self.hidden_dim,))
+        att_context = C.placeholder()
+        mod_context = C.placeholder()
         #output layer [#,c][1]
         start_logits = C.layers.Dense(1, name='out_start')(C.dropout(C.splice(mod_context, att_context), self.dropout))
 

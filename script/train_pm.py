@@ -1,6 +1,6 @@
 import cntk as C
 import numpy as np
-from polymath import BiDAFInd, BiDAF
+from polymath import BiDAFInd, BiDAF, BiDAFCoA
 from rnetmodel import RNet
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 from helpers import print_para_info
@@ -111,7 +111,7 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
             else:
                 yield {} # need to generate empty batch for distributed training
 from pprint import pprint
-def train(data_path, model_path, log_file, config_file, model_name, restore=False, profiling=False, gen_heartbeat=False, gpu=0):
+def train(data_path, model_path, log_file, config_file, model_name, restore=False, profiling=False, gen_heartbeat=False, gpu=0,net='BiDAF'):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
     if training_config['multi_gpu']:
@@ -132,7 +132,14 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
     model_file = os.path.join(model_path, model_name)
 
     # training setting
-    polymath = BiDAFInd(config_file)
+    if net=='BiDAF':
+        polymath = BiDAF(config_file)
+    if net=='BiDAFInd':
+        polymath = BiDAF(config_file)
+    if net=='rnet':
+        polymath = RNet(config_file)
+    if net=='BiDAFCoA':
+        polymath = BiDAFCoA(config_file)
     z, loss, input_phs = polymath.build_model()
 
     max_epochs = training_config['max_epochs']
@@ -223,7 +230,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
                     break
             trainer.summarize_training_progress()
             if epoch+1 % training_config['save_freq']==0:
-                save_name = os.path.join(model_path,'{}_{}.ckp'.format(model_name,epoch))
+                save_name = os.path.join(model_path,'{}_{}'.format(model_name,epoch))
                 print('[TRAIN] save checkpoint into {}'.format(save_name))
                 trainer.save_checkpoint(save_name)
             if not post_epoch_work(epoch_stat):
@@ -359,7 +366,7 @@ def get_answer(raw_text, tokens, start, end):
         import pdb
         pdb.set_trace()
 
-def test(test_data, model_path, model_file, config_file, gpu=0):
+def test(test_data, model_path, model_file, config_file, gpu=0,net='BiDAF'):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
     if training_config['multi_gpu']:
@@ -371,7 +378,16 @@ def test(test_data, model_path, model_file, config_file, gpu=0):
         C.try_set_default_device(C.gpu(my_gpu_id))
     else:
         C.try_set_default_device(C.gpu(gpu))
-    polymath = PolyMath(config_file)
+    if net=='BiDAF':
+        polymath = BiDAF(config_file)
+    if net=='BiDAFInd':
+        polymath = BiDAF(config_file)
+    if net=='rnet':
+        polymath = RNet(config_file)
+    if net=='BiDAFCoA':
+        polymath = BiDAFCoA(config_file)
+
+    # polymath = PolyMath(config_file)
     model = C.load_model(os.path.join(model_path, model_file))
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
@@ -421,22 +437,22 @@ if __name__=='__main__':
     parser.add_argument('-r', '--restart', help='Indicating whether to restart from scratch (instead of restart from checkpoint file by default)', action='store_true')
     parser.add_argument('-test', '--test', help='Test data file', required=False, default=None)
     parser.add_argument('-model', '--model', help='Model file name, also used for saving', required=False, default='default')
-    parser.add_argument('--gpu', help='designate which gpu to use', type=int, default=0)
-
+    parser.add_argument('-gpu','--gpu', help='designate which gpu to use', type=int, default=0)
+    parser.add_argument('-net', '--net', help='use chosen network model', required=False, default='BiDAF', choices=['BiDAF','BiDAFInd','rnet','BiDAFCoA'])
     args = vars(parser.parse_args())
-    model_path = os.path.join(args['outputdir'],"/models")
+    model_path = os.path.join(args['outputdir'],"models")
     if args['datadir'] is not None:
         data_path = args['datadir']
 
     test_data = args['test']
     test_model = args['model']
     if test_data:
-        test(test_data, model_path, test_model, args['config'], args['gpu'])
+        test(test_data, model_path, test_model, args['config'], args['gpu'],args['net'])
     else:
         try:
             train(data_path, model_path, args['logfile'], args['config'],
                 restore = args['restart'], model_name = test_model,
                 profiling = args['profile'],
-                gen_heartbeat = args['genheartbeat'], gpu=args['gpu'])
+                gen_heartbeat = args['genheartbeat'], gpu=args['gpu'],net=args['net'])
         finally:
             C.Communicator.finalize()
