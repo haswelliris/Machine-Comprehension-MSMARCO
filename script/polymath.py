@@ -26,6 +26,10 @@ class PolyMath(object):
         self.wn_dim = len(self.vocab) - known
         self.c_dim = len(self.chars)
         self.a_dim = 1
+        self.convs = model_config['char_convs']
+        self.highway_layers = model_config['highway_layers']
+        self.two_step = model_config['two_step']
+
 
         self.hidden_dim = model_config['hidden_dim']
         self.dropout = model_config['dropout']
@@ -92,13 +96,7 @@ class PolyMath(object):
 class BiDAF(PolyMath):
     def __init__(self, config_file):
         super(BiDAF, self).__init__(config_file)
-        data_config = importlib.import_module(config_file).data_config
-        model_config = importlib.import_module(config_file).model_config
-
-        self.convs = model_config['char_convs']
-        self.highway_layers = model_config['highway_layers']
-        self.two_step = model_config['two_step']
-
+        
     def charcnn(self, x):
         conv_out = C.layers.Sequential([
             C.layers.Embedding(self.char_emb_dim),

@@ -111,7 +111,7 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
             else:
                 yield {} # need to generate empty batch for distributed training
 from pprint import pprint
-def train(data_path, model_path, log_file, config_file, model_name, restore=False, profiling=False, gen_heartbeat=False, gpu=0,net='BiDAF'):
+def train(data_path, model_path, log_file, config_file, model_name, net, restore=False, profiling=False, gen_heartbeat=False, gpu=0):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
     if training_config['multi_gpu']:
@@ -132,14 +132,8 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
     model_file = os.path.join(model_path, model_name)
 
     # training setting
-    if net=='BiDAF':
-        polymath = BiDAF(config_file)
-    if net=='BiDAFInd':
-        polymath = BiDAF(config_file)
-    if net=='rnet':
-        polymath = RNet(config_file)
-    if net=='BiDAFCoA':
-        polymath = BiDAFCoA(config_file)
+
+    polymath = choose_model(config_file, net)
     z, loss, input_phs = polymath.build_model()
 
     max_epochs = training_config['max_epochs']
@@ -366,7 +360,7 @@ def get_answer(raw_text, tokens, start, end):
         import pdb
         pdb.set_trace()
 
-def test(test_data, model_path, model_file, config_file, gpu=0,net='BiDAF'):
+def test(test_data, model_path, model_file, config_file, net, gpu=0):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
     if training_config['multi_gpu']:
@@ -378,16 +372,8 @@ def test(test_data, model_path, model_file, config_file, gpu=0,net='BiDAF'):
         C.try_set_default_device(C.gpu(my_gpu_id))
     else:
         C.try_set_default_device(C.gpu(gpu))
-    if net=='BiDAF':
-        polymath = BiDAF(config_file)
-    if net=='BiDAFInd':
-        polymath = BiDAF(config_file)
-    if net=='rnet':
-        polymath = RNet(config_file)
-    if net=='BiDAFCoA':
-        polymath = BiDAFCoA(config_file)
 
-    # polymath = PolyMath(config_file)
+    polymath = choose_model(config_file, net)
     model = C.load_model(os.path.join(model_path, model_file))
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
@@ -422,6 +408,16 @@ def test(test_data, model_path, model_file, config_file, gpu=0,net='BiDAF'):
             misc['answer'] = []
             misc['uid'] = []
 
+def choose_model(config_file,net):
+    if net=='BiDAF':
+        polymath = BiDAF(config_file)
+    if net=='BiDAFInd':
+        polymath = BiDAF(config_file)
+    if net=='rnet':
+        polymath = RNet(config_file)
+    if net=='BiDAFCoA':
+        polymath = BiDAFCoA(config_file)
+    return polymath
 if __name__=='__main__':
     # default Paths relative to current python file.
     abs_path   = os.path.dirname(os.path.abspath(__file__))
@@ -447,7 +443,7 @@ if __name__=='__main__':
     test_data = args['test']
     test_model = args['model']
     if test_data:
-        test(test_data, model_path, test_model, args['config'], args['gpu'],args['net'])
+        test(test_data, model_path, test_model, args['config'], args['net'],args['gpu'])
     else:
         try:
             train(data_path, model_path, args['logfile'], args['config'],
