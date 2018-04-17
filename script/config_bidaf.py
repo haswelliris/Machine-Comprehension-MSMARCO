@@ -22,21 +22,21 @@ model_config = {
 training_config = {
     'logdir'            : 'logs', # logdir for log outputs and tensorboard
     'tensorboard_freq'  : 1, # tensorboard record frequence
-    'log_freq'          : 500,     # in minibatchs
-    'save_freq'         : 6, # save checkpoint frequency
+    'log_freq'          : 1000,     # in minibatchs
+    'save_freq'         : 1, # save checkpoint frequency
     'train_data'        : 'train.ctf',  # or 'train.tsv'
     'val_data'          : 'dev.ctf',
-    'val_interval'      : 6,       # interval in epochs to run validation
+    'val_interval'      : 10,       # interval in epochs to run validation
     'stop_after'        : 2,       # num epochs to stop if no CV improvement
-    'minibatch_seqs'    : 32,      # num sequences of minibatch, when using tsv reader, per worker
+    'minibatch_seqs'    : 512,      # num sequences of minibatch, when using tsv reader, per worker
     'distributed_after' : 0,       # num sequences after which to start distributed training
     'gpu_pad'           : 0, #emmmmmmm
     'gpu_cnt'           : 1, # number of gpus
     'multi_gpu'         : False, # using multi GPU training
     # training hyperparameters
-    'minibatch_size'    : 4096,    # in samples when using ctf reader, per worker
-    'epoch_size'        : 38713,   # in sequences, when using ctf reader
+    'minibatch_size'    : 500, # 12192,    # in samples when using ctf reader, per worker
+    'epoch_size'        : 500,#32713,   # in sequences, when using ctf reader
     'max_epochs'        : 100,
-    'lr'                : 1,
-    'decay':{'epoch':30, 'rate':0.5}
+    'lr'                : 5,
+    'decay':{'epoch':30, 'rate':0.1}
     }
