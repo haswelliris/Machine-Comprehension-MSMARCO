@@ -270,13 +270,14 @@ class BiDAF(PolyMath):
         # modeling layer output:[#][1] [#,c][2*hidden_dim]
         mod_context_reg= self.modeling_layer(att_context_reg)
         mod_cls_logits = self.match_layer(att_context_cls)
-        cls_mask = 1.0 - C.greater_equal(mod_cls_logits,[0.5])
         # output layer
         start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
-        logits_flag=C.sequence.is_first(start_logits)
-        expand_cls_mask = C.sequence.broadcast_as(cls_mask, start_logits)
-        start_logits = expand_cls_mask*logits_flag+start_logits
-        end_logits = expand_cls_mask*logits_flag+end_logits 
+        # scale logits
+        expand_cls_logits = C.sequence.broadcast_as(mod_cls_logits,start_logits)
+        logits_flag=C.element_select(C.sequence.is_first(start_logits), expand_cls_logits, 1-expand_cls_logits)
+
+        start_logits = start_logits/logits_flag
+        end_logits = end_logits/logits_flag 
 
         # loss
         # 负数

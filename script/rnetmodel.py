@@ -234,10 +234,11 @@ class RNet(polymath.PolyMath):
         init_pu = self.weighted_sum(pu)
 
         start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph) # [#, c][1]
-        logits_flag=C.sequence.is_first(start_logits)
-        expand_cls_mask = C.sequence.broadcast_as(cls_mask, start_logits)
-        start_logits = expand_cls_mask * logits_flag + start_logits
-        end_logits = expand_cls_mask * logits_flag + end_logits 
+        # scale mask
+        expand_cls_logits = C.sequence.broadcast_as(mod_cls_logits,start_logits)
+        logits_flag=C.element_select(C.sequence.is_first(start_logits), expand_cls_logits, 1-expand_cls_logits)
+        start_logits = start_logits/logits_flag
+        end_logits = end_logits/logits_flag 
 
         # loss
         cls_loss = focal_loss(cls_logits,slc)
