@@ -42,6 +42,7 @@ class PolyMath(object):
         self._loss=None
         self._input_phs=None
         self._metric = None
+        self.info = {} # use to record information 
 
     def word_glove(self):
         # load glove
@@ -186,6 +187,8 @@ class BiDAF(PolyMath):
         att_context_cls = C.splice(c_processed, c2q, q2c_out, c_processed*c2q)
         res = C.combine([att_context_cls, att_context_reg])
 
+        self.info['attn1']=q_attn
+        self.info['attn2']=hh_attn
         return C.as_block( res,
             [(c_processed, context), (q_processed, query)],
             'attention_layer',

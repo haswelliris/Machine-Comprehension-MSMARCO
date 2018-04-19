@@ -7,11 +7,7 @@ from rnetmodel import RNet
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 from helpers import print_para_info
 import tsv2ctf
-import os
-import argparse
-import importlib
-import time
-import json
+import os, argparse, importlib, time, json, pickle
 
 def argument_by_name(func, name):
     found = [arg for arg in func.arguments if arg.name == name]
@@ -239,15 +235,15 @@ def train(data_path, model_path, log_file, config_file, model_name, net, restore
                 save_name = os.path.join(model_path,'{}_{}'.format(model_name,epoch))
                 print('[TRAIN] save checkpoint into {}'.format(save_name))
                 save_flag = True
-+               while save_flag:
-+                    os.system('ls -la  >> log.log')
-+                    os.system('ls -la ./output/models >> log.log')
-+                    try:
-+                        trainer.save_checkpoint(save_name)
-+                        save_flag = False
-+                    except:
-+                        print('IO error: try to save model again!')
-+                        save_flag = True
+                while save_flag:
+                    os.system('ls -la  >> log.log')
+                    os.system('ls -la ./output/models >> log.log')
+                    try:
+                        trainer.save_checkpoint(save_name)
+                        save_flag = False
+                    except:
+                        print('IO error: try to save model again!')
+                        save_flag = True
             if not post_epoch_work(epoch_stat):
                 epoch_stat['epoch'] = epoch
                 break
@@ -269,15 +265,15 @@ def train(data_path, model_path, log_file, config_file, model_name, net, restore
                 save_name = os.path.join(model_path,'{}_{}'.format(model_name,epoch))
                 print('[TRAIN] save checkpoint into {}'.format(save_name))
                 save_flag = True
-+               while save_flag:
-+                    os.system('ls -la  >> log.log')
-+                    os.system('ls -la ./output/models >> log.log')
-+                    try:
-+                        trainer.save_checkpoint(save_name)
-+                        save_flag = False
-+                    except:
-+                        print('IO error: try to save model again!')
-+                        save_flag = True
+                while save_flag:
+                    os.system('ls -la  >> log.log')
+                    os.system('ls -la ./output/models >> log.log')
+                    try:
+                        trainer.save_checkpoint(save_name)
+                        save_flag = False
+                    except:
+                        print('IO error: try to save model again!')
+                        save_flag = True
             if not post_epoch_work(epoch_stat):
                 epoch_stat['epoch'] = epoch
                 break
@@ -349,6 +345,26 @@ def validate_model(test_data, polymath,config_file):
         data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
         if not data or not (begin_label in data) or data[begin_label].num_sequences == 0:
             break
+        if num_sequences==0: # save attention weight
+            info = getattr(polymath, info)
+            weights = []
+            for k, v in info.items():
+                weights.append(v.eval(data))
+            save_flag = True
+            while save_flag:
+                os.system('ls -la  >> log.log')
+                os.system('ls -la ./output/visuals >> log.log')
+                try:
+                    save_name = os.path.join('outputs','visuals',\
+                        time.strftime("attn_%H%M%S%d", time.localtime()))
+                    print('[VALIDATION] save weight into {}'.format(save_name))
+                    with open(save_name, 'wb') as f:
+                        pickle.dump(weights,f)
+                    save_flag = False
+                except:
+                    print('IO error: try to save model again!')
+                    save_flag = True
+            
         out = model.eval(data, outputs=[begin_logits,end_logits,loss, metric], as_numpy=False)
         testloss = out[loss]
         g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
@@ -430,7 +446,7 @@ def test(test_data, model_path, model_file, config_file, net, gpu=0):
     results = {}
     with open('{}_out.json'.format(model_file), 'w', encoding='utf-8') as json_output:
         for data in tsv_reader:
-            out = model.eval(data, outputs=[begin_logits,end_logits,cls_scores,loss], as_numpy=False)
+            out = model.eval(data, outputs=[begin_logits,end_logits,cls_scores,loss], as_numpy=True)
             # 计算正负例, 大于0.5为正
             cls_res = C.greater(cls_prediction,C.constant(0.5)).eval({cls_prediction:out[cls_scores]}) # [#][1]
             # 计算梯度，只有被选为最大的那2个位置梯度为1 # [#,c][1]
@@ -448,6 +464,10 @@ def test(test_data, model_path, model_file, config_file, net, gpu=0):
                 predict_answer = get_answer(raw_text, ctokens, span_begin, span_end)
                 results['query_id'] = int(uid)
                 results['answers'] = [predict_answer]
+                # extra information
+                results['cls_score'] = out[cls_scores]
+                results['ab_score'] = np.max(out[begin_logits])
+                results['ae_score'] = np.max(out[end_logits])
                 json.dump(results, json_output)
                 json_output.write("\n")
             misc['rawctx'] = []

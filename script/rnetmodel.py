@@ -224,12 +224,14 @@ class RNet(polymath.PolyMath):
         # graph
         pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
         gate_pu, wei1 = self.gate_attention_layer(pu, qu) # [#,c][4*hidden]
+        self.info['attn1'] = wei1
         print('[RNet build]gate_pu:{}'.format(gate_pu))
         pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
         cls_logits = self.match_layer(qu, pv) # [#][1]
         cls_mask = 1.0 - C.greater_equal(cls_logits,[0.5])
 
         gate_self, wei2 = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
+        self.attn2['attn2'] = wei2
         ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
         init_pu = self.weighted_sum(pu)
 
