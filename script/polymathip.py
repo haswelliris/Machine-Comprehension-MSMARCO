@@ -92,8 +92,6 @@ class BiDAFSL(polymath.BiDAF):
             [(att_context, attention_context), (mod_context, modeling_context)],
             'output_layer',
             'output_layer')
-
-
     def build_model(self):
         c = C.Axis.new_unique_dynamic_axis('c')
         q = C.Axis.new_unique_dynamic_axis('q')
