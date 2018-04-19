@@ -191,11 +191,10 @@ class BiDAF(PolyMath):
             'attention_layer',
             'attention_layer')
 
-    def modeling_layer(self, attention_context_cls, attention_context_reg):
+    def modeling_layer(self,attention_context_reg):
         '''
         在第一遍阅读后，对文章的整体表示
         '''
-        ph1 = C.placeholder()
         ph2 = C.placeholder()
 
         att_context = C.placeholder()
@@ -204,21 +203,22 @@ class BiDAF(PolyMath):
             OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn0'),
             C.layers.Dropout(self.dropout),
             OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn1')])(att_context)
-        cls_context = C.layers.Sequential([
-            C.layers.Dropout(self.dropout),
-            OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn2'),
-            C.sequence.last, C.layers.Dropout(self.dropout)
-            C.layers.Dense(1, activation=C.sigmoid)])(att_context)
-
-        mod_out_cls = cls_context.clone(C.CloneMethod.share, {att_context: ph1})
         mod_out_reg = mod_context.clone(C.CloneMethod.share, {att_context: ph2})
 
         return C.as_block(
-            C.combine([mod_out_cls, mod_out_reg]),
-            [(ph1, attention_context_cls),(ph2, attention_context_reg)],
+            mod_out_reg,
+            [(ph2, attention_context_reg)],
             'modeling_layer',
             'modeling_layer')
 
+    def match_layer(self, attention_context_cls):
+        att_context = C.placeholder()
+        cls_context = C.layers.Sequential([
+            C.layers.Dropout(self.dropout),
+            OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn2'),
+            C.sequence.last, C.layers.Dropout(self.dropout),
+            C.layers.Dense(1, activation=C.sigmoid)])(att_context)
+        return C.as_block(cls_context, [(att_context, attention_context_cls)], 'match layer','match layer')
 
     def output_layer(self, attention_context, modeling_context):
         att_context = C.placeholder()
@@ -257,6 +257,9 @@ class BiDAF(PolyMath):
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
         slc = C.input_variable(1, name='sl')
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
+                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae, 'sl':slc}
+        self._input_phs = input_phs
 
         #input layer
         cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
@@ -265,7 +268,8 @@ class BiDAF(PolyMath):
         att_context_cls, att_context_reg = self.attention_layer(c_processed, q_processed).outputs
 
         # modeling layer output:[#][1] [#,c][2*hidden_dim]
-        mod_cls_logits, mod_context_reg= self.modeling_layer(att_context_cls, att_context_reg).outputs
+        mod_context_reg= self.modeling_layer(att_context_reg)
+        mod_cls_logits = self.match_layer(att_context_cls)
         cls_mask = 1.0 - C.greater_equal(mod_cls_logits,[0.5])
         # output layer
         start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
@@ -276,7 +280,7 @@ class BiDAF(PolyMath):
 
         # loss
         # 负数
-        cls_loss = fical_loss(mod_cls_logits,slc, name='classify')
+        cls_loss = focal_loss(mod_cls_logits,slc)
         # span loss [#][1] + cls loss [#][1]
         new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + C.constant(10)*cls_loss
 
