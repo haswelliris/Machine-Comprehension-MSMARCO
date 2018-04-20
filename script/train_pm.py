@@ -7,11 +7,7 @@ from rnetmodel import RNet
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 from helpers import print_para_info
 import tsv2ctf
-import os
-import argparse
-import importlib
-import time
-import json
+import os, argparse, importlib, time, json, pickle
 
 def argument_by_name(func, name):
     found = [arg for arg in func.arguments if arg.name == name]
@@ -61,8 +57,8 @@ def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=Tru
         input_phs['qnw']: mb_source.streams.query_ng_words,
         input_phs['cc']: mb_source.streams.context_chars,
         input_phs['qc']: mb_source.streams.query_chars,
-        #input_phs['ab']: mb_source.streams.answer_begin,
-        #input_phs['ae']: mb_source.streams.answer_end,
+        input_phs['ab']: mb_source.streams.answer_begin,
+        input_phs['ae']: mb_source.streams.answer_end,
         input_phs['sl']: mb_source.streams.is_selected
     }
     return mb_source, input_map
@@ -119,7 +115,7 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
             else:
                 yield {} # need to generate empty batch for distributed training
 from pprint import pprint
-def train(data_path, model_path, log_file, config_file, model_name, restore=False, profiling=False, gen_heartbeat=False, gpu=0):
+def train(data_path, model_path, log_file, config_file, model_name, net, restore=False, profiling=False, gen_heartbeat=False, gpu=0):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
     if training_config['multi_gpu']:
@@ -140,7 +136,7 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
     model_file = os.path.join(model_path, model_name)
 
     # training setting
-    polymath = BiDAFSL(config_file)
+    polymath = choose_model(config_file,net)
     z, loss, input_phs = polymath.build_model()
     metric = getattr(polymath,'metric',None)
 
@@ -170,7 +166,8 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
     lr = C.learning_parameter_schedule(lr_set, minibatch_size=training_config['minibatch_size'], epoch_size=training_config['epoch_size'])
 
     # learner = C.adadelta(z.parameters, lr, 0.95, 1e-6)
-    learner = C.adam(z.parameters, lr, 0.9)
+    # learner = C.adam(z.parameters, lr, 0.9)
+    learner = training_config['learner_handle'](z.parameters, lr)
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)
 
@@ -235,9 +232,18 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
                     break
             trainer.summarize_training_progress()
             if epoch+1 % training_config['save_freq']==0:
-                save_name = os.path.join(model_path,'{}_{}.ckp'.format(model_name,epoch))
+                save_name = os.path.join(model_path,'{}_{}'.format(model_name,epoch))
                 print('[TRAIN] save checkpoint into {}'.format(save_name))
-                trainer.save_checkpoint(save_name)
+                save_flag = True
+                while save_flag:
+                    os.system('ls -la  >> log.log')
+                    os.system('ls -la ./output/models >> log.log')
+                    try:
+                        trainer.save_checkpoint(save_name)
+                        save_flag = False
+                    except:
+                        print('IO error: try to save model again!')
+                        save_flag = True
             if not post_epoch_work(epoch_stat):
                 epoch_stat['epoch'] = epoch
                 break
@@ -256,10 +262,18 @@ def train(data_path, model_path, log_file, config_file, model_name, restore=Fals
                 minibatch_count += 1
             trainer.summarize_training_progress()
             if epoch+1 % training_config['save_freq']==0:
-                save_name = os.path.join(model_path,'{}_{}.ckp'.format(model_name,epoch))
+                save_name = os.path.join(model_path,'{}_{}'.format(model_name,epoch))
                 print('[TRAIN] save checkpoint into {}'.format(save_name))
-                os.system('ls -al')
-                trainer.save_checkpoint(save_name)
+                save_flag = True
+                while save_flag:
+                    os.system('ls -la  >> log.log')
+                    os.system('ls -la ./output/models >> log.log')
+                    try:
+                        trainer.save_checkpoint(save_name)
+                        save_flag = False
+                    except:
+                        print('IO error: try to save model again!')
+                        save_flag = True
             if not post_epoch_work(epoch_stat):
                 epoch_stat['epoch'] = epoch
                 break
@@ -284,7 +298,8 @@ def validate_model(test_data, polymath,config_file):
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
     loss         = polymath.loss
-    model = C.combine(begin_logits, end_logits, loss)
+    metric = polymath.metric
+    model = C.combine(begin_logits, end_logits, loss, metric)
     input_phs = polymath.input_phs
     mb_source, input_map = create_mb_and_map(input_phs, test_data, polymath, randomize=False, repeat=False)
     begin_label = input_phs['ab']
@@ -294,6 +309,7 @@ def validate_model(test_data, polymath,config_file):
     begin_prediction = C.sequence.input_variable(1, sequence_axis=begin_label.dynamic_axes[1], needs_gradient=True)
     end_prediction = C.sequence.input_variable(1, sequence_axis=end_label.dynamic_axes[1], needs_gradient=True)
     cls_prediction = C.input_variable(1)
+
 
     # max position has gradient 1
     best_span_score = symbolic_best_span(begin_prediction, end_prediction)
@@ -323,25 +339,48 @@ def validate_model(test_data, polymath,config_file):
 
     stat_sum = 0
     loss_sum = 0
-
+    cls_error = 0
 
     while True:
         data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
         if not data or not (begin_label in data) or data[begin_label].num_sequences == 0:
             break
-        out = model.eval(data, outputs=[begin_logits,end_logits,loss], as_numpy=False)
+        if num_sequences==0: # save attention weight
+            info = getattr(polymath, info)
+            weights = []
+            for k, v in info.items():
+                weights.append(v.eval(data))
+            save_flag = True
+            while save_flag:
+                os.system('ls -la  >> log.log')
+                os.system('ls -la ./output/visuals >> log.log')
+                try:
+                    save_name = os.path.join('outputs','visuals',\
+                        time.strftime("attn_%H%M%S%d", time.localtime()))
+                    print('[VALIDATION] save weight into {}'.format(save_name))
+                    with open(save_name, 'wb') as f:
+                        pickle.dump(weights,f)
+                    save_flag = False
+                except:
+                    print('IO error: try to save model again!')
+                    save_flag = True
+            
+        out = model.eval(data, outputs=[begin_logits,end_logits,loss, metric], as_numpy=False)
         testloss = out[loss]
         g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
         other_input_map = {begin_prediction: g[begin_prediction], end_prediction: g[end_prediction], begin_label: data[begin_label], end_label: data[end_label]}
         stat_sum += stats.eval((other_input_map))
         loss_sum += np.sum(testloss.asarray())
+        cls_error += np.sum(out[metric].asarray())
         num_sequences += data[begin_label].num_sequences
 
     stat_avg = stat_sum / num_sequences
     loss_avg = loss_sum / num_sequences
+    metric_avg = cls_error / num_sequences
 
-    print("Validated {} sequences, loss {:.4f}, F1 {:.4f}, EM {:.4f}, precision {:4f}, recall {:4f} hasOverlap {:4f}, start_match {:4f}, end_match {:4f}".format(
+    print("Validated {} sequences, class error {:.4f}, loss {:.4f}, F1 {:.4f}, EM {:.4f}, precision {:4f}, recall {:4f} hasOverlap {:4f}, start_match {:4f}, end_match {:4f}".format(
             num_sequences,
+            metric_avg,
             loss_avg,
             stat_avg[0],
             stat_avg[1],
@@ -375,7 +414,7 @@ def get_answer(raw_text, tokens, start, end):
         import pdb
         pdb.set_trace()
 
-def test(test_data, model_path, model_file, config_file, gpu=0):
+def test(test_data, model_path, model_file, config_file, net, gpu=0):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
     if training_config['multi_gpu']:
@@ -387,7 +426,7 @@ def test(test_data, model_path, model_file, config_file, gpu=0):
         C.try_set_default_device(C.gpu(my_gpu_id))
     else:
         C.try_set_default_device(C.gpu(gpu))
-    polymath = PolyMath(config_file)
+    polymath = choose_model(config_file,net)
     model = C.load_model(os.path.join(model_path, model_file))
     begin_logits = model.outputs[0]
     end_logits   = model.outputs[1]
@@ -407,7 +446,7 @@ def test(test_data, model_path, model_file, config_file, gpu=0):
     results = {}
     with open('{}_out.json'.format(model_file), 'w', encoding='utf-8') as json_output:
         for data in tsv_reader:
-            out = model.eval(data, outputs=[begin_logits,end_logits,cls_scores,loss], as_numpy=False)
+            out = model.eval(data, outputs=[begin_logits,end_logits,cls_scores,loss], as_numpy=True)
             # 计算正负例, 大于0.5为正
             cls_res = C.greater(cls_prediction,C.constant(0.5)).eval({cls_prediction:out[cls_scores]}) # [#][1]
             # 计算梯度，只有被选为最大的那2个位置梯度为1 # [#,c][1]
@@ -425,12 +464,27 @@ def test(test_data, model_path, model_file, config_file, gpu=0):
                 predict_answer = get_answer(raw_text, ctokens, span_begin, span_end)
                 results['query_id'] = int(uid)
                 results['answers'] = [predict_answer]
+                # extra information
+                results['cls_score'] = out[cls_scores]
+                results['ab_score'] = np.max(out[begin_logits])
+                results['ae_score'] = np.max(out[end_logits])
                 json.dump(results, json_output)
                 json_output.write("\n")
             misc['rawctx'] = []
             misc['ctoken'] = []
             misc['answer'] = []
             misc['uid'] = []
+def choose_model(config, net):
+    if net=='bidaf':
+        return BiDAF(config)
+    elif net=='rnet':
+        return RNet(config)
+    elif net=='bidafcoa':
+        return BiDAFSL(config)
+    elif net=='indrnn':
+        return BiDAFInd(config)
+    else:
+        raise Exception('Not Match Net')
 
 if __name__=='__main__':
     # default Paths relative to current python file.
@@ -448,6 +502,7 @@ if __name__=='__main__':
     parser.add_argument('-test', '--test', help='Test data file', required=False, default=None)
     parser.add_argument('-model', '--model', help='Model file name, also used for saving', required=False, default='default')
     parser.add_argument('--gpu', help='designate which gpu to use', type=int, default=0)
+    parser.add_argument('net',help='choose model to train',choices=['rnet','bidaf','bidafcoa','indrnn'])
 
     args = vars(parser.parse_args())
     model_path = os.path.join(args['outputdir'],"/models")
@@ -457,11 +512,11 @@ if __name__=='__main__':
     test_data = args['test']
     test_model = args['model']
     if test_data:
-        test(test_data, model_path, test_model, args['config'], args['gpu'])
+        test(test_data, model_path, test_model, args['config'], args['gpu'],args['net'])
     else:
         try:
             train(data_path, model_path, args['logfile'], args['config'],
-                restore = args['restart'], model_name = test_model,
+                restore = args['restart'], model_name = test_model,net=args['net'],
                 profiling = args['profile'],
                 gen_heartbeat = args['genheartbeat'], gpu=args['gpu'])
         finally:

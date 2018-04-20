@@ -93,7 +93,10 @@ def seq_hardmax(logits):
     s_acc = C.layers.Recurrence(C.plus)(s)
     # 除了最大单词为其logits外，其他都为0
     return s * C.equal(s_acc, 1) # only pick the first one
-
+def focal_loss(logits, labels):
+    one = C.constant(1.0, name='one')
+    loss = -0.25*C.pow((one-logits),2)*C.log(logits+1e-30)-(one-labels)*C.pow(logits,2)*C.log(1-logits+1e-30)
+    return loss
 class LambdaFunc(C.ops.functions.UserFunction):
     def __init__(self,
             arg,

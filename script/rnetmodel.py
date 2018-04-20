@@ -92,9 +92,41 @@ class RNet(polymath.PolyMath):
             'dot attention'
         )
 
+    def simi_attention(self, input, memory):
+        '''
+        return:
+        memory weighted vectors over input [#,c][d]
+        weight
+        '''
+        input_ph = C.placeholder() # [#,c][d]
+        mem_ph = C.placeholder() # [#,q][d]
+        
+        input_dense = Dense(2*self.hidden_dim, bias=False,input_rank=1)
+        mem_dense = Dense(2*self.hidden_dim, bias=False,input_rank=1)
+        bias = C.Parameter(shape=(2*self.hidden_dim,), init=0.0)
+        weight_dense = Dense(1,bias=False, input_rank=1)
+
+        proj_inp = input_dense(input_ph) # [#,c][d]
+        proj_mem = mem_dense(mem_ph) # [#,q][d]
+        unpack_memory, mem_mask = C.sequence.unpack(proj_mem, 0).outputs # [#][*=q, d] [#][*=q]
+        expand_mem = C.sequence.broadcast_as(unpack_memory, proj_inp) # [#,c][*=q,d]
+        expand_mask = C.sequence.broadcast_as(mem_mask, proj_inp) # [#,c][*=q]
+        matrix = C.reshape( weight_dense(C.tanh(proj_inp + expand_mem + bias)) , (-1,)) # [#,c][*=q]
+        matrix = C.element_select(expand_mask, matrix, -1e30)
+        logits = C.softmax(matrix, axis=0) # [#,c][*=q]
+        weight_mem = C.reduce_sum(C.reshape(logits, (-1,1))*expand_mem, axis=0) # [#,c][d]
+        weight_mem = C.reshape(weight_mem, (-1,))
+
+        return C.as_block(
+            C.combine(weight_mem, logits),
+            [(input_ph, input),(mem_ph, memory)],
+            'simi_attention','simi_attention'
+        )
+        
     def gate_attention_layer(self, inputs, memory):
         # [#,c][2*d] [#,c][*=q,1]
-        qc_attn, attn_weight = self.dot_attention(inputs, memory).outputs
+        # qc_attn, attn_weight = self.dot_attention(inputs, memory).outputs
+        qc_attn, attn_weight = self.simi_attention(inputs, memory).outputs
         cont_attn = C.splice(inputs, qc_attn) # [#,c][4*d]
 
         dense = Dropout(self.dropout) >> Dense(4*self.hidden_dim, activation=C.sigmoid, input_rank=1) >> Label('gate')
@@ -149,6 +181,29 @@ class RNet(polymath.PolyMath):
 
         return logits1, logits2
 
+    def match_layer(self, query, doc):
+        '''
+        judge if answer come from this layer
+        '''
+        qry_ph = C.placeholder()
+        doc_ph = C.placeholder()
+
+        dense = Dense(2*self.hidden_dim, C.relu)
+        classifier = C.layers.Sequential([
+            C.layers.Dropout(self.dropout),
+            OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='model_rnn2'),
+            C.sequence.last,
+            Dense(1,C.sigmoid)
+            ])
+        proj_qry = dense(qry_ph)
+        c2q_context,simi_weight = self.simi_attention(proj_qry, doc_ph).outputs
+        res = C.reshape(classifier(C.splice(proj_qry, c2q_context)),(-1,))
+        return C.as_block(
+            res,
+            [(qry_ph,query),(doc_ph, doc)],
+            'match layer','match layer'
+        )
+        
     def build_model(self):
         c = C.Axis.new_unique_dynamic_axis('c')
         q = C.Axis.new_unique_dynamic_axis('q')
@@ -161,28 +216,42 @@ class RNet(polymath.PolyMath):
         qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        slc = C.input_variable(1, name='sl')
         input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
-                        'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
-
+                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae, 'sl':slc}
         self._input_phs = input_phs
+
         # graph
         pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
         gate_pu, wei1 = self.gate_attention_layer(pu, qu) # [#,c][4*hidden]
+        self.info['attn1'] = wei1
         print('[RNet build]gate_pu:{}'.format(gate_pu))
         pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
+        cls_logits = self.match_layer(qu, pv) # [#][1]
+        cls_mask = 1.0 - C.greater_equal(cls_logits,[0.5])
+
         gate_self, wei2 = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
+        self.attn2['attn2'] = wei2
         ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
         init_pu = self.weighted_sum(pu)
 
         start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph) # [#, c][1]
+        # scale mask
+        expand_cls_logits = C.sequence.broadcast_as(mod_cls_logits,start_logits)
+        logits_flag=C.element_select(C.sequence.is_first(start_logits), expand_cls_logits, 1-expand_cls_logits)
+        start_logits = start_logits/logits_flag
+        end_logits = end_logits/logits_flag 
 
         # loss
-        start_loss = seq_loss(start_logits, ab)
-        end_loss = seq_loss(end_logits, ae)
-        # paper_loss = start_loss + end_loss
-        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
-        self._model = C.combine([start_logits,end_logits])
+        cls_loss = focal_loss(cls_logits,slc)
+        # span loss [#][1] + cls loss [#][1]
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + C.constant(10)*cls_loss
+
+        metric = C.classification_error(cls_logits, slc)
+        res = C.combine([start_logits, end_logits, cls_logits])
+        self._model = res
         self._loss = new_loss
+        self._metric = metric
         return self._model, self._loss, self._input_phs
 
 # =============== test edition ==================

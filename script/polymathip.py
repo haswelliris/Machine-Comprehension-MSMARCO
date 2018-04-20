@@ -69,31 +69,6 @@ class BiDAFSL(polymath.BiDAF):
             [(doc1_ph, doc1),(doc2_ph, doc2)],
             'encoder', 'encoder'
         )
-    def output_layer(self, attention_context, modeling_context):
-        att_context = C.placeholder()
-        mod_context = C.placeholder()
-        #output layer
-        # 映射 [#,c][1]
-        start_logits = C.layers.Dense(1, name='out_start')(C.dropout(C.splice(mod_context, att_context), self.dropout))
-        if self.two_step:
-            start_hardmax = seq_hardmax(start_logits)
-            # 得到最大单词的语义表示 [#][dim]
-            att_mod_ctx = C.sequence.last(C.sequence.gather(mod_context, start_hardmax))
-        else:
-            start_prob = C.softmax(start_logits)
-            att_mod_ctx = C.sequence.reduce_sum(mod_context * start_prob)
-        att_mod_ctx_expanded = C.sequence.broadcast_as(att_mod_ctx, att_context)
-        end_input = C.splice(att_context, mod_context, att_mod_ctx_expanded, mod_context * att_mod_ctx_expanded) # [#, c][14*hidden_dim]
-        m2 = OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='output_rnn')(end_input)
-        end_logits = C.layers.Dense(1, name='out_end')(C.dropout(C.splice(m2, att_context), self.dropout))
-
-        return C.as_block(
-            C.combine([start_logits, end_logits]),
-            [(att_context, attention_context), (mod_context, modeling_context)],
-            'output_layer',
-            'output_layer')
-
-
     def build_model(self):
         c = C.Axis.new_unique_dynamic_axis('c')
         q = C.Axis.new_unique_dynamic_axis('q')
@@ -119,27 +94,22 @@ class BiDAFSL(polymath.BiDAF):
         att_context, att_query = self.attention_layer(c_processed, q_processed).outputs
         
         context_summary, query_summary= self.encoder(att_context, att_query).outputs
-        classifier = BatchNormalization() >> Dense(1,activation=C.sigmoid)
+        classifier = Dense(1,activation=C.sigmoid)
         cls_logits = classifier(C.splice(context_summary, query_summary))
-        cls_loss = my_cross_entropy(cls_logits, slc)
+        cls_loss = focal_loss(cls_logits, slc)
 
-        # mod_context = self.modeling_layer(att_context)
-        # start_logits, end_logits = self.output_layer(att_context,mod_context).outputs
-        # # span loss [#][1] + cls loss [#][1]
-        # new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + self.loss_lambda*cls_loss
+        mod_context = self.modeling_layer(att_context)
+        start_logits, end_logits = self.output_layer(att_context,mod_context).outputs
+        # span loss [#][1] + cls loss [#][1]
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + self.loss_lambda*cls_loss
         metric = C.classification_error(cls_logits, slc)
-        # res = C.combine([start_logits, end_logits, cls_loss])
+        res = C.combine([start_logits, end_logits, cls_loss])
 
-        self._model = C.combine(cls_logits, slc)
-        self._loss = cls_loss
+        self._model = res
+        self._loss = new_loss
         self._metric = metric
         return self._model, self._loss, self._input_phs
-    @property
-    def metric(self):
-        if not self._metric:
-            self.build_model()
-        return self._metric
-
+    
 def my_cross_entropy(logits, labels):
     one = C.constant(1.0, name='one')
     loss = -C.constant(10)*labels*C.log(logits+1e-30)-(one-labels)*C.log(one-logits+1e-30)
