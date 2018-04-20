@@ -72,6 +72,30 @@ class ELMoCharacterMapper:
         # +1 one for masking
         return [c + 1 for c in char_ids]
 
+class FeatureMaker(object):
+    @staticmethod
+    def co_occurence(query_tokens, doc_tokens):
+        doc_len = len(doc_tokens)
+        d_exists = [1 if w in query_tokens else 0 for w in doc_tokens]
+        wdcnt = defaultdict(int)
+        for t in doc_tokens:
+            wdcnt[t] += 1
+        q_exists = [wd_cnt[w] for w in query_tokens]
+        assert len(d_exists)==len(doc_tokens)
+        assert len(q_exists)==len(query_tokens)
+        return q_exists, d_exists
+    @staticmethod
+    def jaccard_and_edit(query_tokens, doc_tokens):
+        window_len = len(query_tokens)
+        jaccard = np.zeros(len(doc_tokens))
+        for i in range(len(doc_tokens-window_len)):
+            pass
+    @staticmethod
+    def extract_feature(query_tokens, doc_tokens):
+        '''[Str]->[Str]->[Float]'''
+        q_exists, c_exists = FeatureMaker.co_occurence(query_tokens, doc_tokens)
+        simi = FeatureMaker.jaccard_and_edit(query_tokens, doc_tokens)
+        
 def populate_dicts(files):
     vocab = defaultdict(count().__next__)
     # chars = defaultdict(count().__next__)
