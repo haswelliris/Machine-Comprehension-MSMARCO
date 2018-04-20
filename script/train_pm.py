@@ -46,7 +46,10 @@ def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=Tru
                 answer_end       = C.io.StreamDef('ae',  shape=polymath.a_dim,      is_sparse=False),
                 context_chars    = C.io.StreamDef('cc',  shape=polymath.word_size,  is_sparse=False),
                 query_chars      = C.io.StreamDef('qc',  shape=polymath.word_size,  is_sparse=False),
-                is_selected = C.io.StreamDef('sl', shape=1, is_sparse=False))),
+                is_selected = C.io.StreamDef('sl', shape=1, is_sparse=False),
+                query_feature = C.io.StreamDef('qf', shape=1),
+                doc_feature = C.io.StreamDef('df', shape=3)
+                )),
         randomize=randomize, randomization_window_in_chunks=1024, randomization_window_in_samples=0,
         max_sweeps=C.io.INFINITELY_REPEAT if repeat else 1)
 
@@ -59,7 +62,9 @@ def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=Tru
         input_phs['qc']: mb_source.streams.query_chars,
         input_phs['ab']: mb_source.streams.answer_begin,
         input_phs['ae']: mb_source.streams.answer_end,
-        input_phs['sl']: mb_source.streams.is_selected
+        input_phs['sl']: mb_source.streams.is_selected,
+        input_phs['qf']: mb_source.streams.query_feature,
+        input_phs['df']: mb_source.streams.doc_feature
     }
     return mb_source, input_map
 
@@ -69,7 +74,8 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
         batch_count = 0
         while not(eof and (batch_count % num_workers) == 0):
             batch_count += 1
-            batch={'cwids':[], 'qwids':[], 'baidx':[], 'eaidx':[], 'ccids':[], 'qcids':[]}
+            batch={'cwids':[], 'qwids':[], 'baidx':[], 'eaidx':[], 'ccids':[], 'qcids':[], 'select':[],
+                'qf':[], 'df':[]}
 
             while not eof and len(batch['cwids']) < seqs: # 读取batch
                 line = f.readline()
@@ -81,7 +87,7 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                     import re
                     misc['uid'].append(re.match('^([^\t]*)', line).groups()[0])
 
-                ctokens, qtokens, atokens, cwids, qwids,  baidx, eaidx, ccids, qcids, select = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
+                ctokens, qtokens, atokens, cwids, qwids,  baidx, eaidx, ccids, qcids, select, qf, df = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
 
                 batch['cwids'].append(cwids)
                 batch['qwids'].append(qwids)
@@ -90,6 +96,8 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                 batch['ccids'].append(ccids)
                 batch['qcids'].append(qcids)
                 batch['select'].append(select)
+                batch['qf'].append(qf)
+                batch['df'].append(df)
 
             if len(batch['cwids']) > 0:
                 context_g_words  = C.Value.one_hot([[C.Value.ONE_HOT_SKIP if i >= polymath.wg_dim else i for i in cwids] for cwids in batch['cwids']], polymath.wg_dim)
@@ -101,6 +109,8 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                 answer_begin = [np.asarray(ab, dtype=np.float32) for ab in batch['baidx']]
                 answer_end   = [np.asarray(ae, dtype=np.float32) for ae in batch['eaidx']]
                 select = [np.asarray(ss,dtype=np.float32) for ss in batch['select']]
+                qf = [np.asarray(f, dtype=np.float32) for f in batch['qf']]
+                df = [np.asarray(f, dtype=np.float32) for f in batch['df']]
 
                 yield {input_phs['cgw']:context_g_words,
                        input_phs['qgw']:query_g_words,
@@ -110,7 +120,9 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                        input_phs['qc']:query_chars,
                        input_phs['ab']:answer_begin,
                        input_phs['ae']:answer_end,
-                       input_phs['sl']: select
+                       input_phs['sl']:select,
+                       input_phs['df']:df,
+                       input_phs['qf']:qf
                        }
             else:
                 yield {} # need to generate empty batch for distributed training
