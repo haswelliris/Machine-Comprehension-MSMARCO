@@ -6,22 +6,76 @@ import numpy as np
 
 word_count_threshold = data_config['word_count_threshold']
 char_count_threshold = data_config['char_count_threshold']
-word_size = data_config['word_size']
+word_size = 50
 
 sanitize = str.maketrans({"|": None, "\n": None})
 tsvs = 'train', 'dev', 'test'
 unk = '<UNK>'
-pad = ''
+pad = '<PAD>'
 EMPTY_TOKEN = '<NULL>'
-START_TOKEN = '<s>'
-END_TOKEN = '</s>'
+START_TOKEN = '<S>'
+END_TOKEN = '</S>'
+WORD_START='<W>'
+WORD_END='</W>'
 
 # pad (or trim) to word_size characters
 pad_spec = '{0:<%d.%d}' % (word_size, word_size)
 
+class ELMoCharacterMapper:
+    """
+    Maps individual tokens to sequences of character ids, compatible with ELMo.
+    To be consistent with previously trained models, we include it here as special of existing
+    character indexers.
+    """
+    max_word_length = 50
+
+    # char ids 0-255 come from utf-8 encoding bytes
+    # assign 256-300 to special chars
+    beginning_of_sentence_character = 256  # <begin sentence>
+    end_of_sentence_character = 257  # <end sentence>
+    beginning_of_word_character = 258  # <begin word>
+    end_of_word_character = 259  # <end word>
+    padding_character = 260 # <padding>
+
+    beginning_of_sentence_characters = _make_bos_eos(
+            beginning_of_sentence_character,
+            padding_character,
+            beginning_of_word_character,
+            end_of_word_character,
+            max_word_length
+    )
+    end_of_sentence_characters = _make_bos_eos(
+            end_of_sentence_character,
+            padding_character,
+            beginning_of_word_character,
+            end_of_word_character,
+            max_word_length
+    )
+
+    bos_token = '<S>'
+    eos_token = '</S>'
+
+    @staticmethod
+    def convert_word_to_char_ids(word) -> List[int]:
+        if word == ELMoCharacterMapper.bos_token:
+            char_ids = ELMoCharacterMapper.beginning_of_sentence_characters
+        elif word == ELMoCharacterMapper.eos_token:
+            char_ids = ELMoCharacterMapper.end_of_sentence_characters
+        else:
+            word_encoded = word.encode('utf-8', 'ignore')[:(ELMoCharacterMapper.max_word_length-2)]
+            char_ids = [ELMoCharacterMapper.padding_character] * ELMoCharacterMapper.max_word_length
+            char_ids[0] = ELMoCharacterMapper.beginning_of_word_character
+            for k, chr_id in enumerate(word_encoded, start=1):
+                char_ids[k] = chr_id
+            char_ids[len(word_encoded) + 1] = ELMoCharacterMapper.end_of_word_character
+
+        # +1 one for masking
+        return [c + 1 for c in char_ids]
+
 def populate_dicts(files):
     vocab = defaultdict(count().__next__)
-    chars = defaultdict(count().__next__)
+    # chars = defaultdict(count().__next__)
+    chars = {}
     wdcnt = defaultdict(int)
     chcnt = defaultdict(int)
     test_wdcnt = defaultdict(int) # all glove words in test/dev should be added to known, but non-glove words in test/dev should be kept unknown
@@ -55,20 +109,24 @@ def populate_dicts(files):
     # add the special markers
     _ = vocab[unk]; unkid = vocab[unk]
     _ = vocab[pad]
-    _ = chars[unk]; unkcid = chars[unk]
-    _ = chars[pad]
+    # compatible with elmo
+    # _ = chars[unk]; unkcid = chars[unk]
+    chars[pad] = 260; chars[START_TOKEN]=256; char[END_TOKEN]=257
+    chars[WORD_BEGIN]=258; chars[WORD_END]=259
     _ = vocab[START_TOKEN]
     _ = vocab[END_TOKEN]
 
     #finally add all words that are not in yet
     _  = [vocab[word] for word in wdcnt if word not in vocab and wdcnt[word] > word_count_threshold]
-    _  = [chars[c]    for c    in chcnt if c    not in chars and chcnt[c]    > char_count_threshold]
-	# return as defaultdict(int) so that new keys will return id which is the value for <unknown>
+    for i in range(256):
+        chars[chr(i)]=i
+    #_  = [chars[c]    for c    in chcnt if c    not in chars and chcnt[c]    > char_count_threshold]
+    # return as defaultdict(int) so that new keys will return id which is the value for <unknown>
     return known, dict(vocab), dict(chars)
 
 def tsv_iter(line, vocab, chars, is_test=False, misc={}):
     unk_w = vocab[unk]
-    unk_c = chars[unk]
+    # unk_c = chars[unk]
 
     if is_test:
         #uid, title, context, query = line.split('\t')
@@ -93,8 +151,9 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
 
     cwids = [vocab.get(t.lower(), unk_w) for t in ctokens]
     qwids = [vocab.get(t.lower(), unk_w) for t in qtokens]
-    ccids = [[chars.get(c, unk_c) for c in t][:word_size] for t in ctokens] #clamp at word_size
-    qcids = [[chars.get(c, unk_c) for c in t][:word_size] for t in qtokens]
+    # discard unknown char
+    ccids = [ELMoCharacterMapper.convert_word_to_char_ids(t) for t in ctokens] #clamp at word_size
+    qcids = [ELMoCharacterMapper.convert_word_to_char_ids(t) for t in qtokens]
 
 
     ba, ea = int(begin_answer), int(end_answer) - 1 # the end from tsv is exclusive
