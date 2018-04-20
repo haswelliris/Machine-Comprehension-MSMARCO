@@ -1,0 +1,52 @@
+Elmo(
+  (_elmo_lstm): _ElmoBiLm(
+    (_token_embedder): _ElmoCharacterEncoder(
+      (char_conv_0): Conv1d(16, 32, kernel_size=(1,), stride=(1,))
+      (char_conv_1): Conv1d(16, 32, kernel_size=(2,), stride=(1,))
+      (char_conv_2): Conv1d(16, 64, kernel_size=(3,), stride=(1,))
+      (char_conv_3): Conv1d(16, 128, kernel_size=(4,), stride=(1,))
+      (char_conv_4): Conv1d(16, 256, kernel_size=(5,), stride=(1,))
+      (char_conv_5): Conv1d(16, 512, kernel_size=(6,), stride=(1,))
+      (char_conv_6): Conv1d(16, 1024, kernel_size=(7,), stride=(1,))
+      (_highways): Highway(
+        (_layers): ModuleList(
+          (0): Linear(in_features=2048, out_features=4096, bias=True)
+          (1): Linear(in_features=2048, out_features=4096, bias=True)
+        )
+      )
+      (_projection): Linear(in_features=2048, out_features=512, bias=True)
+    )
+    (_elmo_lstm): ElmoLstm(
+      (forward_layer_0): LstmCellWithProjection(
+        (input_linearity): Linear(in_features=512, out_features=16384, bias=False)
+        (state_linearity): Linear(in_features=512, out_features=16384, bias=True)
+        (state_projection): Linear(in_features=4096, out_features=512, bias=False)
+      )
+      (backward_layer_0): LstmCellWithProjection(
+        (input_linearity): Linear(in_features=512, out_features=16384, bias=False)
+        (state_linearity): Linear(in_features=512, out_features=16384, bias=True)
+        (state_projection): Linear(in_features=4096, out_features=512, bias=False)
+      )
+      (forward_layer_1): LstmCellWithProjection(
+        (input_linearity): Linear(in_features=512, out_features=16384, bias=False)
+        (state_linearity): Linear(in_features=512, out_features=16384, bias=True)
+        (state_projection): Linear(in_features=4096, out_features=512, bias=False)
+      )
+      (backward_layer_1): LstmCellWithProjection(
+        (input_linearity): Linear(in_features=512, out_features=16384, bias=False)
+        (state_linearity): Linear(in_features=512, out_features=16384, bias=True)
+        (state_projection): Linear(in_features=4096, out_features=512, bias=False)
+      )
+    )
+  )
+  (_dropout): Dropout(p=0.2)
+  (scalar_mix_0): ScalarMix(
+    (scalar_parameters): ParameterList(
+    )
+  )
+  (scalar_mix_1): ScalarMix(
+    (scalar_parameters): ParameterList(
+    )
+  )
+)
+
