@@ -37,26 +37,14 @@ class ELMoCharacterMapper:
     end_of_word_character = 259  # <end word>
     padding_character = 260 # <padding>
 
-    beginning_of_sentence_characters = _make_bos_eos(
-            beginning_of_sentence_character,
-            padding_character,
-            beginning_of_word_character,
-            end_of_word_character,
-            max_word_length
-    )
-    end_of_sentence_characters = _make_bos_eos(
-            end_of_sentence_character,
-            padding_character,
-            beginning_of_word_character,
-            end_of_word_character,
-            max_word_length
-    )
+    beginning_of_sentence_characters = [258, 256, 259]+[260]*47 
+    end_of_sentence_characters = [258, 257, 259]+[260]*47
 
     bos_token = '<S>'
     eos_token = '</S>'
 
     @staticmethod
-    def convert_word_to_char_ids(word) -> List[int]:
+    def convert_word_to_char_ids(word):
         if word == ELMoCharacterMapper.bos_token:
             char_ids = ELMoCharacterMapper.beginning_of_sentence_characters
         elif word == ELMoCharacterMapper.eos_token:
@@ -80,21 +68,48 @@ class FeatureMaker(object):
         wdcnt = defaultdict(int)
         for t in doc_tokens:
             wdcnt[t] += 1
-        q_exists = [wd_cnt[w] for w in query_tokens]
+        q_exists = [wdcnt[w]/doc_len for w in query_tokens]
         assert len(d_exists)==len(doc_tokens)
         assert len(q_exists)==len(query_tokens)
-        return q_exists, d_exists
+        return np.array(q_exists), np.array(d_exists)
+    @staticmethod
+    def edit(query_tokens, doc_tokens):
+        '''
+        ni hao ma
+        wo bu hao
+        '''
+        table = np.zeros((len(query_tokens)+1, len(doc_tokens)+1))
+        table[0,:] = np.array(range(len(doc_tokens)+1))
+        table[:,0] = np.array(range(len(query_tokens)+1))
+        for i in range(1,len(query_tokens)+1): # every row
+            for j in range(1,len(doc_tokens)+1): # every column
+                left_up = table[i-1][j-1]+1 if query_tokens[i-1]!=doc_tokens[j-1] else table[i-1][j-1]
+                table[i][j] = min([left_up, table[i-1][j]+1, table[i][j-1]+1])
+
+        return table[len(query_tokens)][len(doc_tokens)]
     @staticmethod
     def jaccard_and_edit(query_tokens, doc_tokens):
         window_len = len(query_tokens)
         jaccard = np.zeros(len(doc_tokens))
-        for i in range(len(doc_tokens-window_len)):
-            pass
+        edit = np.zeros(len(doc_tokens))
+        q_set = set(query_tokens)
+        for i in range(len(doc_tokens)):
+            low = max(0,i-window_len//2)
+            high = i+window_len//2 + 1
+            window_doc = doc_tokens[low:high]
+            doc_set = set(window_doc)
+            a = len(doc_set.intersection(q_set)); b = len(doc_set-q_set); c = len(q_set-doc_set)
+            jaccard[i] = a/(a+b+c)
+            edit[i] = FeatureMaker.edit(query_tokens, window_doc)
+        return np.vstack((jaccard, edit))
+                
     @staticmethod
     def extract_feature(query_tokens, doc_tokens):
         '''[Str]->[Str]->[Float]'''
         q_exists, c_exists = FeatureMaker.co_occurence(query_tokens, doc_tokens)
         simi = FeatureMaker.jaccard_and_edit(query_tokens, doc_tokens)
+        return q_exists, np.vstack((c_exists, simi))
+        
         
 def populate_dicts(files):
     vocab = defaultdict(count().__next__)
@@ -199,17 +214,19 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
         misc['rawctx'] += [context]
         misc['ctoken'] += [ctokens]
 
-    return ctokens, qtokens, atokens, cwids, qwids, baidx, eaidx, ccids, qcids, [select]
+    qs,ds = FeatureMaker.extract_feature(qtokens, ctokens)
+
+    return ctokens, qtokens, atokens, cwids, qwids, baidx, eaidx, ccids, qcids, [select], qs, ds.T
 
 def tsv_to_ctf(f, g, vocab, chars, is_test):
     print("Known words: %d" % known)
     print("Vocab size: %d" % len(vocab))
     print("Char size: %d" % len(chars))
     for lineno, line in enumerate(f):
-        ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids, selections = tsv_iter(line, vocab, chars, is_test)
-
-        for     ctoken,  qtoken,  atoken,  cwid,  qwid,   begin,   end,   ccid,  qcid, selection in zip_longest(
-                ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids, selections):
+        ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids, selections, qs, ds = tsv_iter(line, vocab, chars, is_test)
+        count = 0
+        for     ctoken,  qtoken,  atoken,  cwid,  qwid,   begin,   end,   ccid,  qcid, selection, qf, df in zip_longest(
+                ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids, selections, qs, ds):
             out = [str(lineno)]
             if ctoken is not None:
                 out.append('|# %s' % pad_spec.format(ctoken.translate(sanitize)))
@@ -243,6 +260,11 @@ def tsv_to_ctf(f, g, vocab, chars, is_test):
                 out.append('|qc %s' % outq)
             if selection is not None:
                 out.append('|sl %s' % selection)
+            if qf:
+                out.append('|qf %f' % qf)
+            if df:
+                out.append('|df '+' '.join(df))
+            
             g.write('\t'.join(out))
             g.write('\n')
 

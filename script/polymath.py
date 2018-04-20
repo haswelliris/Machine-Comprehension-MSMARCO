@@ -295,6 +295,60 @@ class BiDAF(PolyMath):
         self._metric = metric
         return self._model, self._loss, self._input_phs
 
+class BiFeature(BiDAF):
+    def __init__(self, config_file):
+        super(BiFeature, self).__init__(config_file)
+    def build_model(self):
+        c = C.Axis.new_unique_dynamic_axis('c')
+        q = C.Axis.new_unique_dynamic_axis('q')
+        b = C.Axis.default_batch_axis()
+        cgw = C.input_variable(self.wg_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cgw')
+        cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
+        qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
+        qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
+        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
+        ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        slc = C.input_variable(1, name='sl')
+        qf = C.input_variable(1, dynamic_axes=[b,q], is_sparse=False, name='query_feature')
+        df = C.input_variable(3, dynamic_axes=[b,c], is_sparse=False, name='doc_feature')
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
+                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae, 'sl':slc,
+                     'qf':qf, 'df':df}
+        self._input_phs = input_phs
+        #input layer
+        cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
+        c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+        # attention layer output:[#,c][8*hidden_dim]
+        att_context_cls, att_context_reg = self.attention_layer(c_processed, q_processed).outputs
+
+        # modeling layer output:[#][1] [#,c][2*hidden_dim]
+        att_context_reg = C.splice(att_context_reg, df)
+        mod_context_reg= self.modeling_layer(att_context_reg)
+        sum_qf = C.sequence.reduce_sum(qf)
+        att_context_cls = C.splice(att_context_cls, df, C.sequence.broadcast_as(sum_qf, att_context_cls))
+        mod_cls_logits = self.match_layer(att_context_cls)
+        # output layer
+        start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
+        # scale logits
+        expand_cls_logits = C.sequence.broadcast_as(mod_cls_logits,start_logits)
+        logits_flag=C.element_select(C.sequence.is_first(start_logits), expand_cls_logits, 1-expand_cls_logits)
+
+        start_logits = start_logits/logits_flag
+        end_logits = end_logits/logits_flag 
+
+        # loss
+        cls_loss = focal_loss(mod_cls_logits,slc)
+        # span loss [#][1] + cls loss [#][1]
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + cls_loss
+
+        metric = C.classification_error(mod_cls_logits, slc)
+        res = C.combine([start_logits, end_logits, mod_cls_logits])
+        self._model = res
+        self._loss = new_loss
+        self._metric = metric
+        return self._model, self._loss, self._input_phs
 
 from subnetworks import IndRNN
 class BiDAFInd(BiDAF):
@@ -386,5 +440,3 @@ class BiDAFInd(BiDAF):
             [(att_context, attention_context)],
             'modeling_layer',
             'modeling_layer')
-
-

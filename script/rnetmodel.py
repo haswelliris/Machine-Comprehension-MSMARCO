@@ -66,8 +66,8 @@ class RNet(polymath.PolyMath):
         @value: [#,q][d] a sequence input refers to weighted sum
         @output: [#,c][d] attention vector
         '''
-        input_ph = C.placeholder(shape=(2*self.hidden_dim,))
-        input_mem = C.placeholder(shape=(2*self.hidden_dim,))
+        input_ph = C.placeholder()
+        input_mem = C.placeholder()
         with C.layers.default_options(bias=False, activation=C.relu): # all the projections have no bias
             attn_proj_enc = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1, name="Wqu")
             attn_proj_dec = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1)
@@ -145,7 +145,7 @@ class RNet(polymath.PolyMath):
         )
 
     def weighted_sum(self, inputs):
-        input_ph = C.placeholder(shape=(self.hidden_dim*2,))
+        input_ph = C.placeholder()
         weight = Sequential([
             BatchNormalization(),
             Dropout(self.dropout), Dense(self.hidden_dim, activation=C.tanh),
@@ -159,8 +159,8 @@ class RNet(polymath.PolyMath):
     def output_layer(self, init, memory):
 
         def pointer(inputs, state):
-            input_ph = C.placeholder(shape=(2*self.hidden_dim,))
-            state_ph = C.placeholder(shape=(2*self.hidden_dim,))
+            input_ph = C.placeholder()
+            state_ph = C.placeholder()
             state_expand = C.sequence.broadcast_as(state_ph, input_ph)
             weight = Sequential([
                 BatchNormalization(),
@@ -246,6 +246,62 @@ class RNet(polymath.PolyMath):
         cls_loss = focal_loss(cls_logits,slc)
         # span loss [#][1] + cls loss [#][1]
         new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + C.constant(10)*cls_loss
+
+        metric = C.classification_error(cls_logits, slc)
+        res = C.combine([start_logits, end_logits, cls_logits])
+        self._model = res
+        self._loss = new_loss
+        self._metric = metric
+        return self._model, self._loss, self._input_phs
+
+class RNetFeature(RNet):
+    def __init__(self, config_file):
+        super(RNetFeature, self).__init__(config_file)
+    def build_model(self):
+        c = C.Axis.new_unique_dynamic_axis('c')
+        q = C.Axis.new_unique_dynamic_axis('q')
+        b = C.Axis.default_batch_axis()
+        cgw = C.input_variable(self.wg_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cgw')
+        cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
+        qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
+        qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
+        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
+        ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        slc = C.input_variable(1, name='sl')
+        qf = C.input_variable(1, dynamic_axes=[b,q], is_sparse=False, name='query_feature')
+        df = C.input_variable(3, dynamic_axes=[b,c], is_sparse=False, name='doc_feature')
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
+                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae, 'sl':slc,
+                     'qf':qf, 'df':df}
+        self._input_phs = input_phs
+        # graph
+        pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
+        qu = C.splice(qu, qf); pu = C.splice(pu, df)
+        gate_pu, wei1 = self.gate_attention_layer(pu, qu) # [#,c][4*hidden]
+        self.info['attn1'] = wei1
+
+        pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
+        pv = C.splice(pv, df)
+        cls_logits = self.match_layer(qu, pv) # [#][1]
+
+        gate_self, wei2 = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
+        self.attn2['attn2'] = wei2
+        ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
+        init_pu = self.weighted_sum(pu)
+
+        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph) # [#, c][1]
+        # scale mask
+        expand_cls_logits = C.sequence.broadcast_as(cls_logits,start_logits)
+        logits_flag=C.element_select(C.sequence.is_first(start_logits), expand_cls_logits, 1-expand_cls_logits)
+        start_logits = start_logits/logits_flag
+        end_logits = end_logits/logits_flag 
+
+        # loss
+        cls_loss = focal_loss(cls_logits,slc)
+        # span loss [#][1] + cls loss [#][1]
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + cls_loss
 
         metric = C.classification_error(cls_logits, slc)
         res = C.combine([start_logits, end_logits, cls_logits])

@@ -19,6 +19,11 @@ model_config = {
     'use_layerbn'       : False,
     'loss_lambda':12.0
 }
+def create_learner(paras, lr):
+    import cntk as C
+    return C.adadelta(paras, lr, 0.95, 1e-6,\
+            l2_regularization_weight=1.0, gaussian_noise_injection_std_dev=0,\
+            gradient_clipping_threshold_per_sample=3.0)
 
 training_config = {
     'logdir'            : 'logs', # logdir for log outputs and tensorboard
@@ -43,8 +48,3 @@ training_config = {
     'learner_handle':create_learner
     }
 
-def create_learner(paras, lr):
-    import cntk as C
-    return C.adadelta(paras, lr, 0.95, 1e-6,\
-            l2_regularization_weight=1.0, gaussian_noise_injection_std_dev=0,\
-            gradient_clipping_threshold_per_sample=3.0)
