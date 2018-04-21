@@ -215,8 +215,8 @@ class ElmoEmbedder(object):
         self.encoder_fac = _ElmoCharEncoder(weight_file)
         self.bilm_fac = _ElmoBilm(weight_file)
     def build(self, require_train=False):
-        gamma = C.Parameter(1,init=0.001)
-        scales = C.Parameter(3, init=C.glorot_uniform())
+        gamma = C.Parameter(1,init=1)
+        scales = C.Parameter(3, init=C.glorot_uniform(), name='scales')
         encoder = self.encoder_fac.build()
         bilm = self.bilm_fac.build()
         @C.Function

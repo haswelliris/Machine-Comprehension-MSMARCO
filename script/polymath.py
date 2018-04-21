@@ -263,6 +263,15 @@ class BiElmo(BiDAF):
     def __init__(self, config_file):
         super(BiElmo, self).__init__(config_file)
         self.__elmo_fac = ElmoEmbedder()
+    def self_attention_layer(self, context):
+        dense = C.layers.Dense(2*self.hidden_dim, activation=C.relu)
+        rnn = OptimizedRnnStack(self.hidden_dim,bidirectional=True, use_cudnn=self.use_cudnn)
+        process_context = rnn(dense(context))
+        # residual attention
+        att_context = self.attention_layer(process_context,process_context,self.hidden_dim*2)+context
+        dense2 = C.layers.Dense(2*self.hidden_dim,activation=C.relu)(att_context)
+        return dense2
+
     def build_model(self):
         c = C.Axis.new_unique_dynamic_axis('c')
         q = C.Axis.new_unique_dynamic_axis('q')
@@ -288,17 +297,19 @@ class BiElmo(BiDAF):
         c_enhance = C.splice(c_processed, c_elmo)
         q_enhance = C.splice(q_processed, q_elmo) 
         att_context = self.attention_layer(c_enhance, q_enhance, dim=2*self.hidden_dim+1024)
-
+        self_context = self.self_attention_layer(att_context) # 2*hidden_dim
         # modeling layer
-        mod_context = self.modeling_layer(att_context)
+        mod_context = self.modeling_layer(self_context)
+        enhance_mod_context = C.splice(mod_context, c_elmo)
 
         # output layer
-        start_logits, end_logits = self.output_layer(att_context, mod_context).outputs
+        start_logits, end_logits = self.output_layer(att_context, enhance_mod_context).outputs
 
         # loss
         start_loss = seq_loss(start_logits, ab)
         end_loss = seq_loss(end_logits, ae)
-        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
+        regulizer = 0.001*C.reduce_sum(encoder.scales*encoder.scales)
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + regulizer
         self._model = C.combine([start_logits,end_logits])
         self._loss = new_loss
         return self._model, self._loss, self._input_phs
@@ -437,9 +448,9 @@ class BiDAFInd(BiDAF):
 class BiDAFCoA(BiDAF):
     def __init__(self, config_file):
        super(BiDAFCoA, self).__init__(config_file)
-    def attention_layer(self, context, query):
-        input_ph = C.placeholder(shape=(2*self.hidden_dim,))
-        input_mem = C.placeholder(shape=(2*self.hidden_dim,))
+    def attention_layer(self, context, query,dim):
+        input_ph = C.placeholder(shape=(dim,))
+        input_mem = C.placeholder(shape=(dim,))
         with C.layers.default_options(bias=False, activation=C.relu):
             attn_proj_enc = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1, name="Wqu")
             attn_proj_dec = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1)
