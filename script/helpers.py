@@ -36,12 +36,12 @@ def OptimizedRnnStack(hidden_dim, num_layers=1, recurrent_op='gru', bidirectiona
                         name=name)
         return func
 
-def HighwayBlock(dim, # ideally this should be inferred, but times does not allow inferred x inferred parameter for now
-                 name=''):
-    transform_weight_initializer=0
-    transform_bias_initializer=0
-    update_weight_initializer=0
-    update_bias_initializer=0
+def HighwayBlock(dim, # ideally this should be inferred, but times does not allow inferred x inferred parameter for now    transform_weight_initializer=0
+        transform_bias_initializer=0,
+        update_weight_initializer=0,
+        update_bias_initializer=0,
+        name=''):
+
     def func(x_var):
         x  = C.placeholder()
         WT = C.Parameter((dim,dim,), init=transform_weight_initializer, name=name+'_WT')
