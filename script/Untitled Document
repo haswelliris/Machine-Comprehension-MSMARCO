@@ -67,7 +67,7 @@ CNN/b_cnn_5
 CNN/b_cnn_6
 CNN_high_0
 CNN_high_0/W_carry
-CNN_high_0/W_transform
+CNN_high_0/W_transform 2048*2048
 CNN_high_0/b_carry
 CNN_high_0/b_transform
 CNN_high_1
@@ -84,8 +84,8 @@ RNN_0/RNN/MultiRNNCell
 RNN_0/RNN/MultiRNNCell/Cell0
 RNN_0/RNN/MultiRNNCell/Cell0/LSTMCell
 RNN_0/RNN/MultiRNNCell/Cell0/LSTMCell/B
-RNN_0/RNN/MultiRNNCell/Cell0/LSTMCell/W_0
-RNN_0/RNN/MultiRNNCell/Cell0/LSTMCell/W_P_0
+RNN_0/RNN/MultiRNNCell/Cell0/LSTMCell/W_0 1024,4096*4
+RNN_0/RNN/MultiRNNCell/Cell0/LSTMCell/W_P_0 4096*512
 RNN_0/RNN/MultiRNNCell/Cell1
 RNN_0/RNN/MultiRNNCell/Cell1/LSTMCell
 RNN_0/RNN/MultiRNNCell/Cell1/LSTMCell/B

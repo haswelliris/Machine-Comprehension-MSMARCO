@@ -37,21 +37,22 @@ def OptimizedRnnStack(hidden_dim, num_layers=1, recurrent_op='gru', bidirectiona
         return func
 
 def HighwayBlock(dim, # ideally this should be inferred, but times does not allow inferred x inferred parameter for now    transform_weight_initializer=0
+        transform_weight_initializer=0,
         transform_bias_initializer=0,
         update_weight_initializer=0,
         update_bias_initializer=0,
         name=''):
-
+    WT = C.Parameter((dim,dim,), init=transform_weight_initializer, name=name+'_WT')
+    bT = C.Parameter(dim,        init=transform_bias_initializer,   name=name+'_bT')
+    WU = C.Parameter((dim,dim,), init=update_weight_initializer,    name=name+'_WU')
+    bU = C.Parameter(dim,        init=update_bias_initializer,      name=name+'_bU')
+    @C.Function
     def func(x_var):
         x  = C.placeholder()
-        WT = C.Parameter((dim,dim,), init=transform_weight_initializer, name=name+'_WT')
-        bT = C.Parameter(dim,        init=transform_bias_initializer,   name=name+'_bT')
-        WU = C.Parameter((dim,dim,), init=update_weight_initializer,    name=name+'_WU')
-        bU = C.Parameter(dim,        init=update_bias_initializer,      name=name+'_bU')
         transform_gate = C.sigmoid(C.times(x, WT, name=name+'_T') + bT)
         update = C.relu(C.times(x, WU, name=name+'_U') + bU)
         return C.as_block(
-            x + transform_gate * (update - x),
+            x + transform_gate * (update - x), # trans(x)*u(x)+(1-f(x))*x
             [(x, x_var)],
             'HighwayBlock',
             'HighwayBlock'+name)
