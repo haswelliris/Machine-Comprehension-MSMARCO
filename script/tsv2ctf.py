@@ -6,22 +6,117 @@ import numpy as np
 
 word_count_threshold = data_config['word_count_threshold']
 char_count_threshold = data_config['char_count_threshold']
-word_size = data_config['word_size']
+word_size = 50
 
 sanitize = str.maketrans({"|": None, "\n": None})
 tsvs = 'train', 'dev', 'test'
 unk = '<UNK>'
-pad = ''
+pad = '<PAD>'
 EMPTY_TOKEN = '<NULL>'
-START_TOKEN = '<s>'
-END_TOKEN = '</s>'
+START_TOKEN = '<S>'
+END_TOKEN = '</S>'
+WORD_START='<W>'
+WORD_END='</W>'
 
 # pad (or trim) to word_size characters
 pad_spec = '{0:<%d.%d}' % (word_size, word_size)
 
+class ELMoCharacterMapper:
+    """
+    Maps individual tokens to sequences of character ids, compatible with ELMo.
+    To be consistent with previously trained models, we include it here as special of existing
+    character indexers.
+    """
+    max_word_length = 50
+
+    # char ids 0-255 come from utf-8 encoding bytes
+    # assign 256-300 to special chars
+    beginning_of_sentence_character = 256  # <begin sentence>
+    end_of_sentence_character = 257  # <end sentence>
+    beginning_of_word_character = 258  # <begin word>
+    end_of_word_character = 259  # <end word>
+    padding_character = 260 # <padding>
+
+    beginning_of_sentence_characters = [258, 256, 259]+[260]*47 
+    end_of_sentence_characters = [258, 257, 259]+[260]*47
+
+    bos_token = '<S>'
+    eos_token = '</S>'
+
+    @staticmethod
+    def convert_word_to_char_ids(word):
+        if word == ELMoCharacterMapper.bos_token:
+            char_ids = ELMoCharacterMapper.beginning_of_sentence_characters
+        elif word == ELMoCharacterMapper.eos_token:
+            char_ids = ELMoCharacterMapper.end_of_sentence_characters
+        else:
+            word_encoded = word.encode('utf-8', 'ignore')[:(ELMoCharacterMapper.max_word_length-2)]
+            char_ids = [ELMoCharacterMapper.padding_character] * ELMoCharacterMapper.max_word_length
+            char_ids[0] = ELMoCharacterMapper.beginning_of_word_character
+            for k, chr_id in enumerate(word_encoded, start=1):
+                char_ids[k] = chr_id
+            char_ids[len(word_encoded) + 1] = ELMoCharacterMapper.end_of_word_character
+
+        # +1 one for masking
+        return [c + 1 for c in char_ids]
+
+class FeatureMaker(object):
+    @staticmethod
+    def co_occurence(query_tokens, doc_tokens):
+        doc_len = len(doc_tokens)
+        d_exists = [1 if w in query_tokens else 0 for w in doc_tokens]
+        wdcnt = defaultdict(int)
+        for t in doc_tokens:
+            wdcnt[t] += 1
+        q_exists = [wdcnt[w]/doc_len for w in query_tokens]
+        assert len(d_exists)==len(doc_tokens)
+        assert len(q_exists)==len(query_tokens)
+        return np.array(q_exists), np.array(d_exists)
+    @staticmethod
+    def edit(query_tokens, doc_tokens):
+        '''
+        ni hao ma
+        wo bu hao
+        '''
+        table = np.zeros((len(query_tokens)+1, len(doc_tokens)+1))
+        table[0,:] = np.array(range(len(doc_tokens)+1))
+        table[:,0] = np.array(range(len(query_tokens)+1))
+        for i in range(1,len(query_tokens)+1): # every row
+            for j in range(1,len(doc_tokens)+1): # every column
+                left_up = table[i-1][j-1]+1 if query_tokens[i-1]!=doc_tokens[j-1] else table[i-1][j-1]
+                table[i][j] = min([left_up, table[i-1][j]+1, table[i][j-1]+1])
+
+        return table[len(query_tokens)][len(doc_tokens)]
+    @staticmethod
+    def jaccard_and_edit(query_tokens, doc_tokens):
+        window_len = len(query_tokens)
+        jaccard = np.zeros(len(doc_tokens))
+        edit = np.zeros(len(doc_tokens))
+        q_set = set(query_tokens)
+        for i in range(len(doc_tokens)):
+            low = max(0,i-window_len//2)
+            high = i+window_len//2 + 1
+            window_doc = doc_tokens[low:high]
+            doc_set = set(window_doc)
+            a = len(doc_set.intersection(q_set)); b = len(doc_set-q_set); c = len(q_set-doc_set)
+            jaccard[i] = a/(a+b+c)
+            edit[i] = FeatureMaker.edit(query_tokens, window_doc)
+        return np.vstack((jaccard, edit))
+                
+    @staticmethod
+    def extract_feature(query_tokens, doc_tokens):
+        '''[Str]->[Str]->[Float]'''
+        query_tokens = list(map(lambda x:x.lower() ,query_tokens))
+        doc_tokens = list(map(lambda x:x.lower(), doc_tokens))
+        q_exists, c_exists = FeatureMaker.co_occurence(query_tokens, doc_tokens)
+        simi = FeatureMaker.jaccard_and_edit(query_tokens, doc_tokens)
+        return q_exists, np.vstack((c_exists, simi))
+        
+        
 def populate_dicts(files):
     vocab = defaultdict(count().__next__)
-    chars = defaultdict(count().__next__)
+    # chars = defaultdict(count().__next__)
+    chars = {}
     wdcnt = defaultdict(int)
     chcnt = defaultdict(int)
     test_wdcnt = defaultdict(int) # all glove words in test/dev should be added to known, but non-glove words in test/dev should be kept unknown
@@ -48,39 +143,43 @@ def populate_dicts(files):
         for line in f:
             word = line.split()[0].lower()
             # polymath adds word to dict regardless of word_count_threshold when it's in GloVe
-            if wdcnt[word] >= 1 or test_wdcnt[word] >= 1: 
+            if wdcnt[word] >= 1 or test_wdcnt[word] >= 1:
                 _ = vocab[word]
     known =len(vocab)
 
     # add the special markers
     _ = vocab[unk]; unkid = vocab[unk]
     _ = vocab[pad]
-    _ = chars[unk]; unkcid = chars[unk]
-    _ = chars[pad]
+    # compatible with elmo
+    # _ = chars[unk]; unkcid = chars[unk]
+    chars[pad] = 260; chars[START_TOKEN]=256; chars[END_TOKEN]=257
+    chars[WORD_START]=258; chars[WORD_END]=259
     _ = vocab[START_TOKEN]
     _ = vocab[END_TOKEN]
 
     #finally add all words that are not in yet
     _  = [vocab[word] for word in wdcnt if word not in vocab and wdcnt[word] > word_count_threshold]
-    _  = [chars[c]    for c    in chcnt if c    not in chars and chcnt[c]    > char_count_threshold]
-	# return as defaultdict(int) so that new keys will return id which is the value for <unknown>
+    for i in range(256):
+        chars[chr(i)]=i
+    #_  = [chars[c]    for c    in chcnt if c    not in chars and chcnt[c]    > char_count_threshold]
+    # return as defaultdict(int) so that new keys will return id which is the value for <unknown>
     return known, dict(vocab), dict(chars)
 
 def tsv_iter(line, vocab, chars, is_test=False, misc={}):
     unk_w = vocab[unk]
-    unk_c = chars[unk]
+    # unk_c = chars[unk]
 
     if is_test:
         #uid, title, context, query = line.split('\t')
-        
+
         # change for dev.tsv
-        uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer = line.split('\t')
+        uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer= line.strip().split('\t')
         answer = ''
         begin_answer, end_answer = '0', '1'
         # change for dev.tsv
         raw_answer = ''
     else:
-        uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer = line.split('\t')
+        uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer = line.strip().split('\t')
         #uid, title, context, query, begin_answer, end_answer, answer = line.split('\t')
 
     ctokens = context.split(' ')
@@ -93,37 +192,43 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
 
     cwids = [vocab.get(t.lower(), unk_w) for t in ctokens]
     qwids = [vocab.get(t.lower(), unk_w) for t in qtokens]
-    ccids = [[chars.get(c, unk_c) for c in t][:word_size] for t in ctokens] #clamp at word_size
-    qcids = [[chars.get(c, unk_c) for c in t][:word_size] for t in qtokens]
+    # discard unknown char
+    ccids = [ELMoCharacterMapper.convert_word_to_char_ids(t) for t in ctokens] #clamp at word_size
+    qcids = [ELMoCharacterMapper.convert_word_to_char_ids(t) for t in qtokens]
+
 
     ba, ea = int(begin_answer), int(end_answer) - 1 # the end from tsv is exclusive
     if ba > ea:
         raise ValueError('answer problem with input line:\n%s' % line)
 
+    # if word is on begin/end position
     baidx = [0 if i != ba else 1 for i,t in enumerate(ctokens)]
     eaidx = [0 if i != ea else 1 for i,t in enumerate(ctokens)]
-    
+
     atokens = answer.split(' ')
-    
+
+    # change for enable is_selected
     if not is_test and sum(eaidx) == 0:
         raise ValueError('problem with input line:\n%s' % line)
-    
+
     if is_test and misc.keys():
         misc['answer'] += [answer]
         misc['rawctx'] += [context]
         misc['ctoken'] += [ctokens]
 
-    return ctokens, qtokens, atokens, cwids, qwids, baidx, eaidx, ccids, qcids
+    qs,ds = FeatureMaker.extract_feature(qtokens, ctokens)
+
+    return ctokens, qtokens, atokens, cwids, qwids, baidx, eaidx, ccids, qcids, qs, ds.T
 
 def tsv_to_ctf(f, g, vocab, chars, is_test):
     print("Known words: %d" % known)
     print("Vocab size: %d" % len(vocab))
     print("Char size: %d" % len(chars))
     for lineno, line in enumerate(f):
-        ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids = tsv_iter(line, vocab, chars, is_test)
-
-        for     ctoken,  qtoken,  atoken,  cwid,  qwid,   begin,   end,   ccid,  qcid in zip_longest(
-                ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids):
+        ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids, qs, ds = tsv_iter(line, vocab, chars, is_test)
+        count = 0
+        for     ctoken,  qtoken,  atoken,  cwid,  qwid,   begin,   end,   ccid,  qcid, qf, df in zip_longest(
+                ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids, qs, ds):
             out = [str(lineno)]
             if ctoken is not None:
                 out.append('|# %s' % pad_spec.format(ctoken.translate(sanitize)))
@@ -155,6 +260,12 @@ def tsv_to_ctf(f, g, vocab, chars, is_test):
             if qcid is not None:
                 outq = ' '.join(['%d' % c for c in qcid+[0]*max(word_size - len(qcid), 0)])
                 out.append('|qc %s' % outq)
+            if qf is not None:
+                out.append('|qf %f' % qf)
+            if df is not None:
+                str_df = [str(x) for x in df]
+                out.append('|df '+' '.join(str_df))
+            
             g.write('\t'.join(out))
             g.write('\n')
 
