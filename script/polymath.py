@@ -5,6 +5,7 @@ import pickle
 import importlib
 import os
 from cntk.initializer import glorot_uniform
+from convert_elmo import ElmoEmbedder
 
 class PolyMath(object):
     def __init__(self, config_file):
@@ -26,17 +27,14 @@ class PolyMath(object):
         self.wn_dim = len(self.vocab) - known
         self.c_dim = len(self.chars)
         self.a_dim = 1
-        self.convs = model_config['char_convs']
-        self.highway_layers = model_config['highway_layers']
-        self.two_step = model_config['two_step']
-
 
         self.hidden_dim = model_config['hidden_dim']
         self.dropout = model_config['dropout']
         self.char_emb_dim = model_config['char_emb_dim']
         self.word_emb_dim = model_config['word_emb_dim']
         self.use_cudnn = model_config['use_cudnn']
-        self.use_sparse = True
+        self.use_sparse = False
+        # self.ldb = model_config['lambda'] # 控制两个loss的平衡
 
         print('dropout', self.dropout)
         print('use_cudnn', self.use_cudnn)
@@ -45,7 +43,8 @@ class PolyMath(object):
         self._model=None
         self._loss=None
         self._input_phs=None
-
+        self._metric = None
+        self.info = {} # use to record information 
     def word_glove(self):
         # load glove
         npglove = np.zeros((self.wg_dim, self.word_emb_dim), dtype=np.float32)
@@ -92,11 +91,19 @@ class PolyMath(object):
         if not self._model:
             self._model, self._loss, self._input_phs = self.build_model()
         return self._input_phs
-
+    @property
+    def metric(self):
+        return self._metric
 class BiDAF(PolyMath):
     def __init__(self, config_file):
         super(BiDAF, self).__init__(config_file)
-        
+        data_config = importlib.import_module(config_file).data_config
+        model_config = importlib.import_module(config_file).model_config
+
+        self.convs = model_config['char_convs']
+        self.highway_layers = model_config['highway_layers']
+        self.two_step = model_config['two_step']
+
     def charcnn(self, x):
         conv_out = C.layers.Sequential([
             C.layers.Embedding(self.char_emb_dim),
@@ -252,7 +259,46 @@ class BiDAF(PolyMath):
         self._loss = new_loss
         return self._model, self._loss, self._input_phs
 
+class BiFeature(BiDAF):
+    def __init__(self, config_file):
+        super(BiFeature, self).__init__(config_file)
+    def build_model(self):
+        c = C.Axis.new_unique_dynamic_axis('c')
+        q = C.Axis.new_unique_dynamic_axis('q')
+        b = C.Axis.default_batch_axis()
+        cgw = C.input_variable(self.wg_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cgw')
+        cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
+        qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
+        qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
+        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
+        ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        qf = C.input_variable(1, dynamic_axes=[b,q], is_sparse=False, name='query_feature')
+        df = C.input_variable(3, dynamic_axes=[b,c], is_sparse=False, name='doc_feature')
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
+                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae,
+                     'qf':qf, 'df':df}
+        self._input_phs = input_phs
+        #input layer
+        cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
+        c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+        # attention layer output:[#,c][8*hidden_dim]
+        att_context = self.attention_layer(c_processed, q_processed)
+        # modeling layer output:[#][1] [#,c][2*hidden_dim]
+        att_context= C.splice(att_context, df)
+        mod_context_reg = self.modeling_layer(att_context_reg)
+        # output layer
+        start_logits, end_logits = self.output_layer(att_context, mod_context_reg).outputs
 
+        # loss
+        # span loss [#][1] + cls loss [#][1]
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
+        res = C.combine([start_logits, end_logits])
+        self._model = res
+        self._loss = new_loss
+        return self._model, self._loss, self._input_phs
+# ====================================
 from subnetworks import IndRNN
 class BiDAFInd(BiDAF):
     def __init__(self, config_file):
@@ -343,7 +389,6 @@ class BiDAFInd(BiDAF):
             [(att_context, attention_context)],
             'modeling_layer',
             'modeling_layer')
-
 
 class BiDAFCoA(BiDAF):
     def __init__(self, config_file):
