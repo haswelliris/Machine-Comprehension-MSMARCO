@@ -144,9 +144,9 @@ class BiDAF(PolyMath):
             'input_layer',
             'input_layer')
 
-    def attention_layer(self, context, query):
-        q_processed = C.placeholder(shape=(2*self.hidden_dim,))
-        c_processed = C.placeholder(shape=(2*self.hidden_dim,))
+    def attention_layer(self, context, query, dim):
+        q_processed = C.placeholder(shape=(dim,))
+        c_processed = C.placeholder(shape=(dim,))
 
         #convert query's sequence axis to static
         qvw, qvw_mask = C.sequence.unpack(q_processed, padding_value=0).outputs
@@ -157,9 +157,9 @@ class BiDAF(PolyMath):
         # here we split it in three parts because the different parts
         # participate in very different operations
         # so W * [h; u; h.* u] becomes w1 * h + w2 * u + w3 * (h.*u)
-        ws1 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
-        ws2 = C.parameter(shape=(2 * self.hidden_dim, 1), init=C.glorot_uniform())
-        ws3 = C.parameter(shape=(1, 2 * self.hidden_dim), init=C.glorot_uniform())
+        ws1 = C.parameter(shape=(dim, 1), init=C.glorot_uniform())
+        ws2 = C.parameter(shape=(dim, 1), init=C.glorot_uniform())
+        ws3 = C.parameter(shape=(1, dim), init=C.glorot_uniform())
         att_bias = C.parameter(shape=(), init=0)
 
         wh = C.times (c_processed, ws1)
@@ -243,7 +243,7 @@ class BiDAF(PolyMath):
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
 
         # attention layer
-        att_context = self.attention_layer(c_processed, q_processed)
+        att_context = self.attention_layer(c_processed, q_processed, dim=2*self.hidden_dim)
 
         # modeling layer
         mod_context = self.modeling_layer(att_context)
@@ -259,6 +259,50 @@ class BiDAF(PolyMath):
         self._loss = new_loss
         return self._model, self._loss, self._input_phs
 
+class BiElmo(BiDAF):
+    def __init__(self, config_file):
+        super(BiElmo, self).__init__(config_file)
+        self.__elmo_fac = ElmoEmbedder()
+    def build_model(self):
+        c = C.Axis.new_unique_dynamic_axis('c')
+        q = C.Axis.new_unique_dynamic_axis('q')
+        b = C.Axis.default_batch_axis()
+        cgw = C.input_variable(self.wg_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cgw')
+        cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
+        qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
+        qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
+        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
+        ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
+                        'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
+        self._input_phs = input_phs
+        elmo_encoder = self.__elmo_fac.build()
+        #input layer
+        c_elmo = elmo_encoder(cc)
+        q_elmo = elmo_encoder(qc)
+        c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+
+        # attention layer
+        c_enhance = C.splice(c_processed, c_elmo)
+        q_enhance = C.splice(q_processed, q_elmo) 
+        att_context = self.attention_layer(c_enhance, q_enhance, dim=2*self.hidden_dim+1024)
+
+        # modeling layer
+        mod_context = self.modeling_layer(att_context)
+
+        # output layer
+        start_logits, end_logits = self.output_layer(att_context, mod_context).outputs
+
+        # loss
+        start_loss = seq_loss(start_logits, ab)
+        end_loss = seq_loss(end_logits, ae)
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
+        self._model = C.combine([start_logits,end_logits])
+        self._loss = new_loss
+        return self._model, self._loss, self._input_phs
+   
 class BiFeature(BiDAF):
     def __init__(self, config_file):
         super(BiFeature, self).__init__(config_file)
@@ -284,7 +328,7 @@ class BiFeature(BiDAF):
         cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
         # attention layer output:[#,c][8*hidden_dim]
-        att_context = self.attention_layer(c_processed, q_processed)
+        att_context = self.attention_layer(c_processed, q_processed, dim=self.hidden_dim)
         # modeling layer output:[#][1] [#,c][2*hidden_dim]
         att_context= C.splice(att_context, df)
         mod_context_reg = self.modeling_layer(att_context_reg)
