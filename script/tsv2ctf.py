@@ -126,7 +126,7 @@ def populate_dicts(files):
                 if 'test' in f:
                     uid, title, context, query = line.split('\t')
                 else:
-                    uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer = line.split('\t')
+                    uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer,sl = line.split('\t')
                 tokens = context.split(' ')+query.split(' ')
                 if 'train' in f:
                     for t in tokens:
@@ -150,8 +150,8 @@ def populate_dicts(files):
     _ = vocab[pad]
     # compatible with elmo
     # _ = chars[unk]; unkcid = chars[unk]
-    chars[pad] = 260; chars[START_TOKEN]=256; char[END_TOKEN]=257
-    chars[WORD_BEGIN]=258; chars[WORD_END]=259
+    chars[pad] = 260; chars[START_TOKEN]=256; chars[END_TOKEN]=257
+    chars[WORD_START]=258; chars[WORD_END]=259
     _ = vocab[START_TOKEN]
     _ = vocab[END_TOKEN]
 
@@ -260,10 +260,11 @@ def tsv_to_ctf(f, g, vocab, chars, is_test):
                 out.append('|qc %s' % outq)
             if selection is not None:
                 out.append('|sl %s' % selection)
-            if qf:
+            if qf is not None:
                 out.append('|qf %f' % qf)
-            if df:
-                out.append('|df '+' '.join(df))
+            if df is not None:
+                str_df = [str(x) for x in df]
+                out.append('|df '+' '.join(str_df))
             
             g.write('\t'.join(out))
             g.write('\n')
