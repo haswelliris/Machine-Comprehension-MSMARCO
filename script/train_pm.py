@@ -1,6 +1,6 @@
 import cntk as C
 import numpy as np
-from polymath import BiDAFInd, BiDAF, BiDAFCoA
+from polymath import BiDAFInd, BiDAF, BiDAFCoA, BiElmo, BiFeature
 from rnetmodel import RNet
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 from helpers import print_para_info
@@ -47,7 +47,10 @@ def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=Tru
                 answer_begin     = C.io.StreamDef('ab',  shape=polymath.a_dim,      is_sparse=False),
                 answer_end       = C.io.StreamDef('ae',  shape=polymath.a_dim,      is_sparse=False),
                 context_chars    = C.io.StreamDef('cc',  shape=polymath.word_size,  is_sparse=False),
-                query_chars      = C.io.StreamDef('qc',  shape=polymath.word_size,  is_sparse=False))),
+                query_chars      = C.io.StreamDef('qc',  shape=polymath.word_size,  is_sparse=False),
+                query_feature = C.io.StreamDef('qf', shape=1, is_sparse=False),
+                doc_feature = C.io.StreamDef('df',shape=3, is_sparse=False) 
+                )),
         randomize=randomize,
         max_sweeps=C.io.INFINITELY_REPEAT if repeat else 1)
 
@@ -59,8 +62,12 @@ def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=Tru
         input_phs['cc']: mb_source.streams.context_chars,
         input_phs['qc']: mb_source.streams.query_chars,
         input_phs['ab']: mb_source.streams.answer_begin,
-        input_phs['ae']: mb_source.streams.answer_end
+        input_phs['ae']: mb_source.streams.answer_end,
     }
+    if input_phs.get('qf',None) is not None:
+        input_map[input_phs['qf']] = mb_source.streams.query_feature
+    if input_phs.get('df',None) is not None:
+        input_map[input_phs['df']] = mb_source.streams.doc_feature
     return mb_source, input_map
 
 def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=False, misc=None):
@@ -69,7 +76,7 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
         batch_count = 0
         while not(eof and (batch_count % num_workers) == 0):
             batch_count += 1
-            batch={'cwids':[], 'qwids':[], 'baidx':[], 'eaidx':[], 'ccids':[], 'qcids':[]}
+            batch={'cwids':[], 'qwids':[], 'baidx':[], 'eaidx':[], 'ccids':[], 'qcids':[], 'qf':[],'df':[]}
 
             while not eof and len(batch['cwids']) < seqs:
                 line = f.readline()
@@ -81,7 +88,7 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                     import re
                     misc['uid'].append(re.match('^([^\t]*)', line).groups()[0])
 
-                ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
+                ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids, qf, df = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
 
                 batch['cwids'].append(cwids)
                 batch['qwids'].append(qwids)
@@ -89,6 +96,8 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                 batch['eaidx'].append(eaidx)
                 batch['ccids'].append(ccids)
                 batch['qcids'].append(qcids)
+                batch['qf'].append(qf.copy())
+                batch['df'].append(df.copy())
 
             if len(batch['cwids']) > 0:
                 context_g_words  = C.Value.one_hot([[C.Value.ONE_HOT_SKIP if i >= polymath.wg_dim else i for i in cwids] for cwids in batch['cwids']], polymath.wg_dim)
@@ -100,14 +109,19 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                 answer_begin = [np.asarray(ab, dtype=np.float32) for ab in batch['baidx']]
                 answer_end   = [np.asarray(ae, dtype=np.float32) for ae in batch['eaidx']]
 
-                yield {  input_phs['cgw']:context_g_words,
+                input_map = {input_phs['cgw']:context_g_words,
                          input_phs['qgw']:query_g_words,
                          input_phs['cnw']:context_ng_words,
                          input_phs['qnw']:query_ng_words,
                          input_phs['cc']:context_chars,
                          input_phs['qc']:query_chars,
                          input_phs['ab']:answer_begin,
-                         input_phs['ae']:answer_end }
+                         input_phs['ae']:answer_end}
+                if input_phs.get('qf',None) is not None:
+                    input_map[input_phs['qf']] = batch['qf']
+                if input_phs.get('df',None) is not None:
+                    input_map[input_phs['df']] = batch['df']
+                yield input_map
             else:
                 yield {} # need to generate empty batch for distributed training
 from pprint import pprint
@@ -426,6 +440,10 @@ def choose_model(config_file,net):
         polymath = RNet(config_file)
     if net=='BiDAFCoA':
         polymath = BiDAFCoA(config_file)
+    if net=='BiFeature':
+        polymath = BiFeature(config_file)
+    if net=='BiElmo':
+        polymath = BiElmo(config_file)
     return polymath
 if __name__=='__main__':
     # default Paths relative to current python file.
@@ -443,7 +461,8 @@ if __name__=='__main__':
     parser.add_argument('-test', '--test', help='Test data file', required=False, default=None)
     parser.add_argument('-model', '--model', help='Model file name, also used for saving', required=False, default='default')
     parser.add_argument('-gpu','--gpu', help='designate which gpu to use', type=int, default=0)
-    parser.add_argument('-net', '--net', help='use chosen network model', required=False, default='BiDAF', choices=['BiDAF','BiDAFInd','rnet','BiDAFCoA'])
+    parser.add_argument('-net', '--net', help='use chosen network model', required=False, default='BiDAF',
+                        choices=['BiDAF','BiDAFInd','rnet','BiDAFCoA','BiFeature','BiElmo'])
     args = vars(parser.parse_args())
     model_path = os.path.join(args['outputdir'],"models")
     if args['datadir'] is not None:

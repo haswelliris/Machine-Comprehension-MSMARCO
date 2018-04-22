@@ -329,20 +329,20 @@ class BiFeature(BiDAF):
         qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
-        qf = C.input_variable(1, dynamic_axes=[b,q], is_sparse=False, name='query_feature')
+        # qf = C.input_variable(1, dynamic_axes=[b,q], is_sparse=False, name='query_feature')
         df = C.input_variable(3, dynamic_axes=[b,c], is_sparse=False, name='doc_feature')
         input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
                      'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae,
-                     'qf':qf, 'df':df}
+                     'df':df}
         self._input_phs = input_phs
         #input layer
         cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
         # attention layer output:[#,c][8*hidden_dim]
-        att_context = self.attention_layer(c_processed, q_processed, dim=self.hidden_dim)
+        att_context = self.attention_layer(c_processed, q_processed, dim=2*self.hidden_dim)
         # modeling layer output:[#][1] [#,c][2*hidden_dim]
         att_context= C.splice(att_context, df)
-        mod_context_reg = self.modeling_layer(att_context_reg)
+        mod_context_reg = self.modeling_layer(att_context)
         # output layer
         start_logits, end_logits = self.output_layer(att_context, mod_context_reg).outputs
 
