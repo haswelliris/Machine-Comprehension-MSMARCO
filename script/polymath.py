@@ -266,10 +266,12 @@ class BiElmo(BiDAF):
     def self_attention_layer(self, context):
         dense = C.layers.Dense(2*self.hidden_dim, activation=C.relu)
         rnn = OptimizedRnnStack(self.hidden_dim,bidirectional=True, use_cudnn=self.use_cudnn)
-        process_context = rnn(dense(context))
+        context1 = dense(context)
+        process_context = rnn(context1)
         # residual attention
-        att_context = self.attention_layer(process_context,process_context,self.hidden_dim*2)+context
+        att_context = self.attention_layer(process_context,process_context,self.hidden_dim*2)
         dense2 = C.layers.Dense(2*self.hidden_dim,activation=C.relu)(att_context)
+        res = dense2+context1
         return dense2
 
     def build_model(self):
@@ -289,8 +291,10 @@ class BiElmo(BiDAF):
         self._input_phs = input_phs
         elmo_encoder = self.__elmo_fac.build()
         #input layer
-        c_elmo = elmo_encoder(cc)
-        q_elmo = elmo_encoder(qc)
+        reduction_cc = C.reshape(cc,(-1,))
+        reduction_qc = C.reshape(qc, (-1,))
+        c_elmo = elmo_encoder(reduction_cc)
+        q_elmo = elmo_encoder(reduction_qc)
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
 
         # attention layer
@@ -308,7 +312,7 @@ class BiElmo(BiDAF):
         # loss
         start_loss = seq_loss(start_logits, ab)
         end_loss = seq_loss(end_logits, ae)
-        regulizer = 0.001*C.reduce_sum(encoder.scales*encoder.scales)
+        regulizer = 0.001*C.reduce_sum(elmo_encoder.scales*elmo_encoder.scales)
         new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + regulizer
         self._model = C.combine([start_logits,end_logits])
         self._loss = new_loss
