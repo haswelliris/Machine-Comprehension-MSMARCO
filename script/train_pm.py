@@ -176,8 +176,8 @@ def train(data_path, model_path, log_file, config_file, model_name, net, restore
         print('learning rate set:{}'.format(lr_set))
     lr = C.learning_parameter_schedule(lr_set, minibatch_size=training_config['minibatch_size'], epoch_size=training_config['epoch_size'])
 
-    learner = C.adadelta(z.parameters, lr, 0.95, 1e-6)
-
+    # learner = C.adadelta(z.parameters, lr, 0.95, 1e-6)
+    learner = training_config['learner_handle'](z.parameters, lr)
     if C.Communicator.num_workers() > 1:
         learner = C.data_parallel_distributed_learner(learner)
 

@@ -18,10 +18,14 @@ model_config = {
     'use_cudnn'         : True,
     'use_layerbn'       : False
 }
-
+def create_learner(paras, lr):
+    import cntk as C
+    return C.adadelta(paras, lr, 0.85, 1e-6,\
+            l2_regularization_weight=1.0, gaussian_noise_injection_std_dev=0,\
+            gradient_clipping_threshold_per_sample=3.0)
 training_config = {
     'logdir'            : 'logs', # logdir for log outputs and tensorboard
-    'tensorboard_freq'  : 1, # tensorboard record frequence
+    'tensorboard_freq'  : 200, # tensorboard record frequence
     'log_freq'          : 1000,     # in minibatchs
     'save_freq'         : 1, # save checkpoint frequency
     'train_data'        : 'train.ctf',  # or 'train.tsv'
@@ -38,5 +42,6 @@ training_config = {
     'epoch_size'        : 500,#32713,   # in sequences, when using ctf reader
     'max_epochs'        : 100,
     'lr'                : 5,
-    'decay':{'epoch':30, 'rate':0.1}
+    'decay':{'epoch':30, 'rate':0.1},
+    'learner_handle':create_learner
     }
