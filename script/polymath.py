@@ -74,6 +74,12 @@ class PolyMath(object):
         def func(cg):
              return C.times(cg, glove)
         return func
+    def word_level_drop(self, doc):
+        # doc [#, c][d]
+        seq_shape=C.sequence.is_first(doc)
+        u = C.random.uniform_like(seq_shape, seed=98052)
+        mask = C.element_select(C.greater(u, 0.08),1.0,0)
+        return doc*mask
         
     def build_model(self):
         raise NotImplementedError
