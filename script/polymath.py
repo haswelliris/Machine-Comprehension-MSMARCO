@@ -74,6 +74,7 @@ class PolyMath(object):
         def func(cg):
              return C.times(cg, glove)
         return func
+        
     def build_model(self):
         raise NotImplementedError
     @property
@@ -419,7 +420,6 @@ class BiDAFInd(BiDAF):
             'input_layer',
             'input_layer')
 
-
     def modeling_layer(self, attention_context):
         att_context = C.placeholder(shape=(8*self.hidden_dim,))
         self._indrnn_builder._input_size = 8*self.hidden_dim
@@ -485,7 +485,7 @@ class BiDAFCoA(BiDAF):
         c_over_q = C.reconcile_dynamic_axes(c_over_q, cln_inp_ph)
 
         weighted_q = c_over_q.clone(C.CloneMethod.share, {cln_mem_ph: memory_, cln_inp_ph: inputs_}) # [#,c][2d]
-        c2c = c_over_q.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: inputs_}) # [#,c][2d]
+        c2c = q_over_c.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: inputs_}) # [#,c][2d]
 
         att_context = C.splice(input_ph, weighted_q, c2c) # 2d+2d+2d
 
