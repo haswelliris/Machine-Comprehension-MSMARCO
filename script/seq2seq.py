@@ -9,9 +9,9 @@ known, vocabs, chars = pickle.load(open('vocabs.pkl','rb'))
 
 myConfig = {
         'save_name':'seq2seq',
-        'save_freq': 100,
-        'output_dir':'v1',
-        'max_epoch':7000,
+        'save_freq': 5,
+        'output_dir':'output',
+        'max_epoch':20,
         'epoch_size': 30000, # total: 44961 sequences in v1
         'batchsize':256,
         'lr':0.1,
@@ -33,7 +33,7 @@ def GloveEmbed():
             word = parts[0].lower()
             idx = vocabs[word]
             if idx<known:
-                npglove[idx] = np.array([float(p) for p in parts[1:]])
+                npglove[idx] = np.array([float(p) for p in parts[-myConfig['embed_dim']:]])
     glove = C.constant(npglove)
     nonglove = C.parameter(shape=(myConfig['wn_dim'], myConfig['embed_dim']), init = C.glorot_uniform(), name='nongloveE')
     @C.Function
@@ -135,7 +135,7 @@ def create_eval_model(s2smodel, embed_layer, is_test=False):
     '''
     return: @input map @softmax @loss
     '''
-    sentence_end_index = vocabs['</s>']
+    sentence_end_index = vocabs['</S>']
     q = C.Axis.new_unique_dynamic_axis('q')
     a = C.Axis.new_unique_dynamic_axis('a')
     b = C.Axis.default_batch_axis()

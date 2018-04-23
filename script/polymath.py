@@ -4,6 +4,8 @@ from helpers import *
 import pickle
 import importlib
 import os
+from cntk.initializer import glorot_uniform
+from convert_elmo import ElmoEmbedder
 
 class PolyMath(object):
     def __init__(self, config_file):
@@ -73,6 +75,17 @@ class PolyMath(object):
         def func(cg):
              return C.times(cg, glove)
         return func
+    def word_level_drop(self, doc):
+        # doc [#, c][d]
+        seq_shape=C.sequence.is_first(doc)
+        u = C.random.uniform_like(seq_shape, seed=98052)
+        mask = C.element_select(C.greater(u, 0.08),1.0,0)
+        return doc*mask
+    def self_summary(self,doc):
+        dense=C.layers.Dense(1, activation=C.tanh, input_rank=1)
+        logits=C.sequence.softmax(dense(doc))
+        res = C.sequence.reduce_sum(logits*doc)
+        return res
     def build_model(self):
         raise NotImplementedError
     @property
@@ -295,6 +308,66 @@ class BiDAF(PolyMath):
         self._metric = metric
         return self._model, self._loss, self._input_phs
 
+
+class BiElmo(BiDAF):
+    def __init__(self, config_file):
+        super(BiElmo, self).__init__(config_file)
+        self.__elmo_fac = ElmoEmbedder()
+    def self_attention_layer(self, context):
+        dense = C.layers.Dense(2*self.hidden_dim, activation=C.relu)
+        rnn = OptimizedRnnStack(self.hidden_dim,bidirectional=True, use_cudnn=self.use_cudnn)
+        context1 = dense(context)
+        process_context = rnn(context1)
+        # residual attention
+        att_context = self.attention_layer(process_context,process_context,self.hidden_dim*2)
+        dense2 = C.layers.Dense(2*self.hidden_dim,activation=C.relu)(att_context)
+        res = dense2+context1
+        return dense2
+
+    def build_model(self):
+        c = C.Axis.new_unique_dynamic_axis('c')
+        q = C.Axis.new_unique_dynamic_axis('q')
+        b = C.Axis.default_batch_axis()
+        cgw = C.input_variable(self.wg_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cgw')
+        cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
+        qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
+        qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
+        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
+        ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
+                        'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
+        self._input_phs = input_phs
+        elmo_encoder = self.__elmo_fac.build()
+        #input layer
+        reduction_cc = C.reshape(cc,(-1,))
+        reduction_qc = C.reshape(qc, (-1,))
+        c_elmo = elmo_encoder(reduction_cc)
+        q_elmo = elmo_encoder(reduction_qc)
+        c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+
+        # attention layer
+        c_enhance = C.splice(c_processed, c_elmo)
+        q_enhance = C.splice(q_processed, q_elmo) 
+        att_context = self.attention_layer(c_enhance, q_enhance, dim=2*self.hidden_dim+1024)
+        self_context = self.self_attention_layer(att_context) # 2*hidden_dim
+        # modeling layer
+        mod_context = self.modeling_layer(self_context)
+        enhance_mod_context = C.splice(mod_context, c_elmo)
+
+        # output layer
+        start_logits, end_logits = self.output_layer(att_context, enhance_mod_context).outputs
+
+        # loss
+        start_loss = seq_loss(start_logits, ab)
+        end_loss = seq_loss(end_logits, ae)
+        regulizer = 0.001*C.reduce_sum(elmo_encoder.scales*elmo_encoder.scales)
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + regulizer
+        self._model = C.combine([start_logits,end_logits])
+        self._loss = new_loss
+        return self._model, self._loss, self._input_phs
+   
 class BiFeature(BiDAF):
     def __init__(self, config_file):
         super(BiFeature, self).__init__(config_file)
@@ -320,15 +393,19 @@ class BiFeature(BiDAF):
         #input layer
         cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+        c_processed = self.word_level_drop(c_processed)
         # attention layer output:[#,c][8*hidden_dim]
         att_context_cls, att_context_reg = self.attention_layer(c_processed, q_processed).outputs
 
         # modeling layer output:[#][1] [#,c][2*hidden_dim]
         att_context_reg = C.splice(att_context_reg, df)
         mod_context_reg= self.modeling_layer(att_context_reg)
+
         sum_qf = C.sequence.reduce_sum(qf)
         att_context_cls = C.splice(att_context_cls, df, C.sequence.broadcast_as(sum_qf, att_context_cls))
         mod_cls_logits = self.match_layer(att_context_cls)
+        # modify hidden representation
+
         # output layer
         start_logits, end_logits = self.output_layer(att_context_reg, mod_context_reg).outputs
         # scale logits
@@ -341,7 +418,7 @@ class BiFeature(BiDAF):
         # loss
         cls_loss = focal_loss(mod_cls_logits,slc)
         # span loss [#][1] + cls loss [#][1]
-        new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + cls_loss
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + 0.1*cls_loss
 
         metric = C.classification_error(mod_cls_logits, slc)
         res = C.combine([start_logits, end_logits, mod_cls_logits])
@@ -440,3 +517,50 @@ class BiDAFInd(BiDAF):
             [(att_context, attention_context)],
             'modeling_layer',
             'modeling_layer')
+
+class BiDAFCoA(BiDAF):
+    def __init__(self, config_file):
+       super(BiDAFCoA, self).__init__(config_file)
+    def attention_layer(self, context, query,dim):
+        input_ph = C.placeholder(shape=(dim,))
+        input_mem = C.placeholder(shape=(dim,))
+        with C.layers.default_options(bias=False, activation=C.relu):
+            attn_proj_enc = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1, name="Wqu")
+            attn_proj_dec = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1)
+
+        inputs_ = attn_proj_enc(input_ph) # [#,c][d]
+        memory_ = attn_proj_dec(input_mem) # [#,q][d]
+
+        cln_mem_ph = C.placeholder() # [#,q][?=d]
+        cln_inp_ph = C.placeholder() # [#,c][?=d]
+        unpack_inputs, inputs_mask = C.sequence.unpack(cln_inp_ph, 0).outputs # [#][*=c,d] [#][*=c]
+        expand_inputs = C.sequence.broadcast_as(unpack_inputs, cln_mem_ph) # [#,q][*=c,d]
+        matrix = C.reshape(C.times_transpose(cln_mem_ph, expand_inputs)/(self.hidden_dim**0.5),(-1,)) # [#,q][*=c]
+        matrix = C.element_select(C.sequence.broadcast_as(inputs_mask,cln_mem_ph), matrix, C.constant(-1e30))
+        logits = C.softmax(matrix, axis=0, name='level 1 weight') # [#,q][*=c]
+        trans_expand_inputs = C.transpose(expand_inputs,[1,0]) # [#,q][d,*=c]
+        q_over_c = C.reshape(C.reduce_sum(logits*trans_expand_inputs,axis=1),(-1,))/(self.hidden_dim**0.5) # [#,q][d]
+        new_q = C.splice(cln_mem_ph, q_over_c) # [#,q][2*d]
+        # over
+        unpack_matrix, matrix_mask = C.sequence.unpack(matrix,0).outputs # [#][*=q,*=c] [#][*=q]
+        inputs_mask_s = C.to_sequence(C.reshape(inputs_mask,(-1,1))) # [#,c'][1]
+        trans_matrix = C.to_sequence_like(C.transpose(unpack_matrix,[1,0]), inputs_mask_s) # [#,c'][*=q]
+        trans_matrix = C.sequence.gather(trans_matrix, inputs_mask_s) # [#,c2][*=q]
+        trans_matrix = C.element_select(C.sequence.broadcast_as(matrix_mask, trans_matrix), trans_matrix, C.constant(-1e30))
+        logits2 = C.softmax(trans_matrix, axis=0, name='level 2 weight') # [#,c2][*=c]
+        unpack_new_q, new_q_mask = C.sequence.unpack(new_q,0).outputs # [#][*=q,2*d] [#][*=q]
+        expand_new_q = C.transpose(C.sequence.broadcast_as(unpack_new_q, trans_matrix),[1,0]) # [#,c2][2d,*=q]
+        c_over_q = C.reshape(C.reduce_sum(logits2*expand_new_q, axis=1),(-1,))/(2*self.hidden_dim)**0.5 # [#,c2][2d]
+        c_over_q = C.reconcile_dynamic_axes(c_over_q, cln_inp_ph)
+
+        weighted_q = c_over_q.clone(C.CloneMethod.share, {cln_mem_ph: memory_, cln_inp_ph: inputs_}) # [#,c][2d]
+        c2c = q_over_c.clone(C.CloneMethod.share, {cln_mem_ph: inputs_, cln_inp_ph: inputs_}) # [#,c][2d]
+
+        att_context = C.splice(input_ph, weighted_q, c2c) # 2d+2d+2d
+
+        return C.as_block(
+            att_context,
+            [(input_ph, context),(input_mem, query)],
+            'attention_layer','attention_layer'
+        )
+

@@ -168,6 +168,7 @@ class _ElmoBilm(object):
         self.layer_num = 2
         self.forward_unit = [None for _ in range(self.layer_num)]
         self.backward_unit = [None for _ in range(self.layer_num)]
+        self.dropout=0.2
 
     def _load_weight(self):
         with h5py.File(self.weight_file,'r') as fin:
@@ -194,11 +195,12 @@ class _ElmoBilm(object):
         layer1_b = Recurrence(self.backward_unit[0],True)
         layer2_f = Recurrence(self.forward_unit[1])
         layer2_b = Recurrence(self.backward_unit[1], True)
+        drop = Dropout(self.dropout)
         @C.Function
         def _func(x):
-            layer1_out_f = layer1_f(x); layer1_out_b = layer1_b(x)
-            layer2_out_f = layer2_f(layer1_out_f)
-            layer2_out_b = layer2_b(layer1_out_b)
+            layer1_out_f = drop(layer1_f(x)); layer1_out_b = drop(layer1_b(x))
+            layer2_out_f = drop(layer2_f(layer1_out_f))
+            layer2_out_b = drop(layer2_b(layer1_out_b))
             return (
                 C.splice(layer1_out_f,layer1_out_b), C.splice(layer2_out_f,layer2_out_b)
                 )
@@ -213,8 +215,8 @@ class ElmoEmbedder(object):
         self.encoder_fac = _ElmoCharEncoder(weight_file)
         self.bilm_fac = _ElmoBilm(weight_file)
     def build(self, require_train=False):
-        gamma = C.Parameter(1,init=1.0)
-        scales = C.Parameter(3, init=C.glorot_uniform())
+        gamma = C.Parameter(1,init=1)
+        scales = C.Parameter(3, init=C.glorot_uniform(), name='scales')
         encoder = self.encoder_fac.build()
         bilm = self.bilm_fac.build()
         @C.Function

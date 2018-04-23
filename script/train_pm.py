@@ -1,7 +1,7 @@
 # -*- coding:utf8
 import cntk as C
 import numpy as np
-from polymath import BiDAFInd, BiDAF
+from polymath import BiDAFInd, BiDAF, BiElmo, BiFeature
 from polymathip import BiDAFSL
 from rnetmodel import RNet
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
@@ -62,10 +62,12 @@ def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=Tru
         input_phs['qc']: mb_source.streams.query_chars,
         input_phs['ab']: mb_source.streams.answer_begin,
         input_phs['ae']: mb_source.streams.answer_end,
-        input_phs['sl']: mb_source.streams.is_selected,
-        input_phs['qf']: mb_source.streams.query_feature,
-        input_phs['df']: mb_source.streams.doc_feature
+        input_phs['sl']: mb_source.stream_info.sl,
     }
+    if input_phs.get('qf',None) is not None:
+        input_map[input_phs['qf']] = mb_source.streams.query_feature
+    if input_phs.get('df',None) is not None:
+        input_map[input_phs['df']] = mb_source.streams.doc_feature
     return mb_source, input_map
 
 def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=False, misc=None):
@@ -74,10 +76,9 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
         batch_count = 0
         while not(eof and (batch_count % num_workers) == 0):
             batch_count += 1
-            batch={'cwids':[], 'qwids':[], 'baidx':[], 'eaidx':[], 'ccids':[], 'qcids':[], 'select':[],
-                'qf':[], 'df':[]}
+            batch={'cwids':[], 'qwids':[], 'baidx':[], 'eaidx':[], 'ccids':[], 'qcids':[], 'qf':[],'df':[]}
 
-            while not eof and len(batch['cwids']) < seqs: # 读取batch
+            while not eof and len(batch['cwids']) < seqs:
                 line = f.readline()
                 if not line:
                     eof = True
@@ -108,22 +109,23 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                 query_chars   = [np.asarray([[[c for c in qc+[0]*max(0,polymath.word_size-len(qc))]] for qc in qcid], dtype=np.float32) for qcid in batch['qcids']]
                 answer_begin = [np.asarray(ab, dtype=np.float32) for ab in batch['baidx']]
                 answer_end   = [np.asarray(ae, dtype=np.float32) for ae in batch['eaidx']]
-                select = [np.asarray(ss,dtype=np.float32) for ss in batch['select']]
-                qf = [np.asarray(f, dtype=np.float32) for f in batch['qf']]
-                df = [np.asarray(f, dtype=np.float32) for f in batch['df']]
+                selected = [np.array(x, dtype=np.float32) for sl in batch['select']]
 
-                yield {input_phs['cgw']:context_g_words,
-                       input_phs['qgw']:query_g_words,
-                       input_phs['cnw']:context_ng_words,
-                       input_phs['qnw']:query_ng_words,
-                       input_phs['cc']:context_chars,
-                       input_phs['qc']:query_chars,
-                       input_phs['ab']:answer_begin,
-                       input_phs['ae']:answer_end,
-                       input_phs['sl']:select,
-                       input_phs['df']:df,
-                       input_phs['qf']:qf
-                       }
+                input_map = {input_phs['cgw']:context_g_words,
+                         input_phs['qgw']:query_g_words,
+                         input_phs['cnw']:context_ng_words,
+                         input_phs['qnw']:query_ng_words,
+                         input_phs['cc']:context_chars,
+                         input_phs['qc']:query_chars,
+                         input_phs['ab']:answer_begin,
+                         input_phs['ae']:answer_end,
+                         input_phs['sl']:selected
+                         }
+                if input_phs.get('qf',None) is not None:
+                    input_map[input_phs['qf']] = batch['qf']
+                if input_phs.get('df',None) is not None:
+                    input_map[input_phs['df']] = batch['df']
+                yield input_map
             else:
                 yield {} # need to generate empty batch for distributed training
 from pprint import pprint
@@ -177,7 +179,6 @@ def train(data_path, model_path, log_file, config_file, model_name, net, restore
         lr_set= [(e,(rate**i)*lr_set) for i,e in enumerate(range(1, max_epochs, epoch))]
     lr = C.learning_parameter_schedule(lr_set, minibatch_size=training_config['minibatch_size'], epoch_size=training_config['epoch_size'])
 
-    # learner = C.adadelta(z.parameters, lr, 0.95, 1e-6)
     # learner = C.adam(z.parameters, lr, 0.9)
     learner = training_config['learner_handle'](z.parameters, lr)
     if C.Communicator.num_workers() > 1:
@@ -495,6 +496,10 @@ def choose_model(config, net):
         return BiDAFSL(config)
     elif net=='indrnn':
         return BiDAFInd(config)
+    elif net=='BiFeature':
+        return BiFeature(config)
+    elif net=='BiElmo':
+        return BiElmo(config)
     else:
         raise Exception('Not Match Net')
 
@@ -514,7 +519,8 @@ if __name__=='__main__':
     parser.add_argument('-test', '--test', help='Test data file', required=False, default=None)
     parser.add_argument('-model', '--model', help='Model file name, also used for saving', required=False, default='default')
     parser.add_argument('--gpu', help='designate which gpu to use', type=int, default=0)
-    parser.add_argument('net',help='choose model to train',choices=['rnet','bidaf','bidafcoa','indrnn'])
+    parser.add_argument('net',help='choose model to train',
+        choices=['rnet','bidaf','bidafcoa','indrnn','BiFeature','BiElmo'])
 
     args = vars(parser.parse_args())
     model_path = os.path.join(args['outputdir'],"/models")
