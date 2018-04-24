@@ -175,7 +175,7 @@ class BiDAF(PolyMath):
         # qvw*ws4: [#][*,200], whu:[#,c][*]
         whu = C.reshape(C.reduce_sum(
             c_processed[:common_dim] *\
-            C.sequence.broadcast_as(qvw[:common_dim] * ws4, c_processed), axis=1), (-1,))
+            C.sequence.broadcast_as(qvw[:,:common_dim] * ws4, c_processed), axis=1), (-1,))
         S1 = wh + C.sequence.broadcast_as(wu, c_processed) + att_bias # [#,c][*]
         qvw_mask_expanded = C.sequence.broadcast_as(qvw_mask, c_processed)
         S1 = C.element_select(qvw_mask_expanded, S1, C.constant(-1e+30))
@@ -187,7 +187,7 @@ class BiDAF(PolyMath):
 
         htilde = C.sequence.reduce_sum(c_processed * c_attn) # [#][200]
         q2c = C.sequence.broadcast_as(htilde, c_processed) # [#,c][200]
-        q2c_out = c_processed * q2c
+        q2c_out = c_processed[:common_dim] * q2c[:common_dim]
 
         hvw, hvw_mask = C.sequence.unpack(c_processed, padding_value=0).outputs
         whh = C.reshape(C.times(c_processed, ws3),(-1,)) # [#][*,1]
@@ -198,7 +198,8 @@ class BiDAF(PolyMath):
         c2c = C.reshape(C.reduce_sum(C.sequence.broadcast_as(hvw, hh_attn)*hh_attn, axis=0), (-1,))
 
         # 原始文档，题目表示，文章重点表示，匹配度表示，文章上下文表示
-        att_context_reg = C.splice(c_processed, c2q, q2c_out, c_processed*c2q, c2c)
+        att_context_reg = C.splice(c_processed, c2q, q2c_out, 
+                    c_processed[:common_dim]*c2q[:common_dim], c2c)
         #att_context_cls = C.splice(c_processed, c2q, q2c_out, c_processed*c2q)
         #res = C.combine([att_context_cls, att_context_reg])
 
@@ -386,7 +387,7 @@ class BiFeature(BiDAF):
         c_processedf = self.word_level_drop(c_processedf)
         # attention layer output:[#,c][8*hidden_dim]
         att_context_reg = self.attention_layer(c_processedf, q_processedf,\
-                    dimc=2*self.hidden_dim+3, dimq=2*self.hidden_dim+1, common_dim=2*self.hidden_dim).outputs
+                    dimc=2*self.hidden_dim+3, dimq=2*self.hidden_dim+1, common_dim=2*self.hidden_dim)
 
         # modeling layer output:[#][1] [#,c][2*hidden_dim]
         mod_context_reg= self.modeling_layer(att_context_reg)
@@ -394,7 +395,7 @@ class BiFeature(BiDAF):
         sum_qf = C.sequence.reduce_sum(qf)
         c_summary = self.self_summary(mod_context_reg)
         q_summary = self.self_summary(self.modeling_layer(q_processed))
-        att_context_cls = C.splice(c_summary, sum_qf)
+        att_context_cls = C.splice(c_summary, q_summary, sum_qf)
         mod_cls_logits = C.layers.Dense(1,activation=C.sigmoid, input_rank=1)(att_context_cls)
         # modify hidden representation
         expand_cls_logits =  C.sequence.broadcast_as(mod_cls_logits, mod_context_reg)

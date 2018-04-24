@@ -62,7 +62,7 @@ def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=Tru
         input_phs['qc']: mb_source.streams.query_chars,
         input_phs['ab']: mb_source.streams.answer_begin,
         input_phs['ae']: mb_source.streams.answer_end,
-        input_phs['sl']: mb_source.stream_info.sl,
+        input_phs['sl']: mb_source.streams.is_selected,
     }
     if input_phs.get('qf',None) is not None:
         input_map[input_phs['qf']] = mb_source.streams.query_feature
