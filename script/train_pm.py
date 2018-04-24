@@ -488,14 +488,8 @@ def test(test_data, model_path, model_file, config_file, net, gpu=0):
             misc['answer'] = []
             misc['uid'] = []
 def choose_model(config, net):
-    if net=='bidaf':
-        return BiDAF(config)
     elif net=='rnet':
         return RNet(config)
-    elif net=='bidafcoa':
-        return BiDAFSL(config)
-    elif net=='indrnn':
-        return BiDAFInd(config)
     elif net=='BiFeature':
         return BiFeature(config)
     elif net=='BiElmo':
@@ -520,7 +514,7 @@ if __name__=='__main__':
     parser.add_argument('-model', '--model', help='Model file name, also used for saving', required=False, default='default')
     parser.add_argument('--gpu', help='designate which gpu to use', type=int, default=0)
     parser.add_argument('net',help='choose model to train',
-        choices=['rnet','bidaf','bidafcoa','indrnn','BiFeature','BiElmo'])
+        choices=['rnet','BiFeature','BiElmo'])
 
     args = vars(parser.parse_args())
     model_path = os.path.join(args['outputdir'],"/models")
