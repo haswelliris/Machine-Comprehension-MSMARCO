@@ -4,7 +4,7 @@ from helpers import *
 import pickle
 import importlib
 import os
-from cntk.initializer import glorot_uniform
+from cntk.initializer import glorot_uniform, xavier
 from convert_elmo import ElmoEmbedder
 
 class PolyMath(object):
@@ -79,14 +79,17 @@ class PolyMath(object):
         # doc [#, c][d]
         seq_shape=C.sequence.is_first(doc)
         u = C.random.uniform_like(seq_shape, seed=98052)
-        mask = C.element_select(C.greater(u, 0.08),1.0,0)
-        res = C.sequence.gather(doc, mask)
-        return res
+        mask = C.element_select(C.greater(u, 0.01),1.0,0)
+        return mask*doc
     def self_summary(self,doc):
         dense=C.layers.Dense(1, activation=C.tanh, input_rank=1)
         logits=C.sequence.softmax(dense(doc))
         res = C.sequence.reduce_sum(logits*doc)
         return res
+    def scale_cls_layer(self, vector):
+        dense = C.layers.Dense(1,init=xavier(3.0), input_rank=1)
+        scalar = C.Parameter(1,init=2.0)
+        return C.sigmoid(scalar*dense(vector))
     def build_model(self):
         raise NotImplementedError
     @property
@@ -387,24 +390,27 @@ class BiFeature(BiDAF):
         c_processedf = self.word_level_drop(c_processedf)
         # attention layer output:[#,c][8*hidden_dim]
         att_context_reg,self.info['attn1'], self.info['attn2'] = self.attention_layer(c_processedf, q_processedf,\
-                    dimc=2*self.hidden_dim+3, dimq=2*self.hidden_dim+1, common_dim=2*self.hidden_dim)
+                    dimc=2*self.hidden_dim+3, dimq=2*self.hidden_dim+1, common_dim=2*self.hidden_dim).outputs
 
         # modeling layer output:[#][1] [#,c][2*hidden_dim]
         mod_context_reg= self.modeling_layer(att_context_reg)
 
+        # artificial features for classification
         sum_qf = C.sequence.reduce_sum(qf)
+        min_distance = -C.sequence.reduce_max(-df[1:])
         c_summary = self.self_summary(mod_context_reg)
         q_summary = self.self_summary(self.modeling_layer(q_processed))
-        att_context_cls = C.splice(c_summary, q_summary, sum_qf)
-        mod_cls_logits = C.layers.Dense(1,activation=C.sigmoid, input_rank=1)(att_context_cls)
+        att_context_cls = C.splice(c_summary, q_summary, sum_qf, min_distance)
+        mod_cls_logits = self.scale_cls_layer(att_context_cls)
         # modify hidden representation
         expand_cls_logits =  C.sequence.broadcast_as(mod_cls_logits, mod_context_reg)
         # output layer
         start_logits, end_logits = self.output_layer(att_context_reg*expand_cls_logits,\
                                             mod_context_reg*expand_cls_logits).outputs
         # scale logits
-        start_logits = start_logits*expand_cls_logits
-        end_logits = end_logits*expand_cls_logits 
+        logits_flag=C.element_select(C.sequence.is_first(start_logits), expand_cls_logits, 1-expand_cls_logits)
+        start_logits = start_logits/logits_flag
+        end_logits = end_logits/logits_flag 
 
         # loss
         cls_loss = focal_loss(mod_cls_logits,slc)

@@ -237,7 +237,7 @@ class RNet(polymath.PolyMath):
 
         start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph) # [#, c][1]
         # scale mask
-        expand_cls_logits = C.sequence.broadcast_as(mod_cls_logits,start_logits)
+        expand_cls_logits = C.sequence.broadcast_as(cls_logits,start_logits)
         logits_flag=C.element_select(C.sequence.is_first(start_logits), expand_cls_logits, 1-expand_cls_logits)
         start_logits = start_logits/logits_flag
         end_logits = end_logits/logits_flag 
@@ -278,25 +278,30 @@ class RNetFeature(RNet):
         self._input_phs = input_phs
         # graph
         pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
-        qu = C.splice(qu, qf); pu = C.splice(pu, df)
         gate_pu, wei1 = self.gate_attention_layer(pu, qu) # [#,c][4*hidden]
-        self.info['attn1'] = wei1
+        #self.info['attn1'] = wei1
 
         pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
-        pv = C.splice(pv, df)
-        cls_logits = self.match_layer(qu, pv) # [#][1]
+        # cls_logits = self.match_layer(qu, pv) # [#][1]
+        sum_qf = C.sequence.reduce_sum(qf)
+        c_summary = self.self_summary(C.splice(pv,df))
+        q_summary = self.self_summary(qu)
+        att_context_cls = C.splice(c_summary, q_summary, sum_qf)
+        cls_logits = C.layers.Dense(1,activation=C.sigmoid, input_rank=1)(att_context_cls)
 
         gate_self, wei2 = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
-        self.attn2['attn2'] = wei2
+        #self.attn2['attn2'] = wei2
         ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
-        init_pu = self.weighted_sum(pu)
+        expand_cls_logits = C.sequence.broadcast_as(cls_logits,ph)
+        ph = ph*expand_cls_logits
+        init_pu = C.splice(self.weighted_sum(pu),0,0,0)
+        ph_fea = C.splice(ph, df)
 
-        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph) # [#, c][1]
+        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph_fea) # [#, c][1]
         # scale mask
-        expand_cls_logits = C.sequence.broadcast_as(cls_logits,start_logits)
-        logits_flag=C.element_select(C.sequence.is_first(start_logits), expand_cls_logits, 1-expand_cls_logits)
-        start_logits = start_logits/logits_flag
-        end_logits = end_logits/logits_flag 
+        # logits_flag=C.element_select(C.sequence.is_first(start_logits), expand_cls_logits, 1-expand_cls_logits)
+        # start_logits = start_logits/logits_flag
+        # end_logits = end_logits/logits_flag 
 
         # loss
         cls_loss = focal_loss(cls_logits,slc)
