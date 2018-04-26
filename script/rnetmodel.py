@@ -22,6 +22,7 @@ class RNet(polymath.PolyMath):
 
         self.convs = model_config['char_convs']
         self.highway_layers = model_config['highway_layers']
+        self.info = {}
 
     def charcnn(self, x):
         conv_out = C.layers.Sequential([
@@ -123,10 +124,13 @@ class RNet(polymath.PolyMath):
             'simi_attention','simi_attention'
         )
         
-    def gate_attention_layer(self, inputs, memory):
+    def gate_attention_layer(self, inputs, memory, common_len=None):
         # [#,c][2*d] [#,c][*=q,1]
         # qc_attn, attn_weight = self.dot_attention(inputs, memory).outputs
         qc_attn, attn_weight = self.simi_attention(inputs, memory).outputs
+        if common_len is not None:
+            inputs = inputs[:common_len]
+            qc_attn = qc_attn[:common_len]
         cont_attn = C.splice(inputs, qc_attn) # [#,c][4*d]
 
         dense = Dropout(self.dropout) >> Dense(4*self.hidden_dim, activation=C.sigmoid, input_rank=1) >> Label('gate')
@@ -278,30 +282,32 @@ class RNetFeature(RNet):
         self._input_phs = input_phs
         # graph
         pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
-        gate_pu, wei1 = self.gate_attention_layer(pu, qu) # [#,c][4*hidden]
-        #self.info['attn1'] = wei1
-
+        enhance_pu = C.splice(pu,df); enhance_qu = C.splice(qu, qf)
+        gate_pu, wei1 = self.gate_attention_layer(enhance_pu, enhance_qu, common_len=2*self.hidden_dim) # [#,c][4*hidden]
+        self.info['attn1'] = wei1
         pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
-        # cls_logits = self.match_layer(qu, pv) # [#][1]
+
+        # artificial features for classification
         sum_qf = C.sequence.reduce_sum(qf)
+        min_distance = -C.sequence.reduce_max(-df[1:])
         c_summary = self.self_summary(C.splice(pv,df))
         q_summary = self.self_summary(qu)
-        att_context_cls = C.splice(c_summary, q_summary, sum_qf)
-        cls_logits = C.layers.Dense(1,activation=C.sigmoid, input_rank=1)(att_context_cls)
+        att_context_cls = C.splice(c_summary, q_summary, sum_qf, min_distance)
+        cls_logits = self.scale_cls_layer(att_context_cls)
 
+        # self attention 
         gate_self, wei2 = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
-        #self.attn2['attn2'] = wei2
+        self.info['attn2'] = wei2
         ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
         expand_cls_logits = C.sequence.broadcast_as(cls_logits,ph)
-        ph = ph*expand_cls_logits
-        init_pu = C.splice(self.weighted_sum(pu),0,0,0)
-        ph_fea = C.splice(ph, df)
+        ph = ph*expand_cls_logits # modify hidden representation
+        init_pu = self.weighted_sum(pu)
 
-        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph_fea) # [#, c][1]
+        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph) # [#, c][1]
         # scale mask
-        # logits_flag=C.element_select(C.sequence.is_first(start_logits), expand_cls_logits, 1-expand_cls_logits)
-        # start_logits = start_logits/logits_flag
-        # end_logits = end_logits/logits_flag 
+        logits_flag=C.element_select(C.sequence.is_first(start_logits), expand_cls_logits, 1-expand_cls_logits)
+        start_logits = start_logits/logits_flag
+        end_logits = end_logits/logits_flag 
 
         # loss
         cls_loss = focal_loss(cls_logits,slc)
