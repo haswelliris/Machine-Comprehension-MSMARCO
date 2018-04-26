@@ -80,7 +80,8 @@ class PolyMath(object):
         seq_shape=C.sequence.is_first(doc)
         u = C.random.uniform_like(seq_shape, seed=98052)
         mask = C.element_select(C.greater(u, 0.08),1.0,0)
-        return doc*mask
+        res = C.sequence.gather(doc, mask)
+        return res
     def self_summary(self,doc):
         dense=C.layers.Dense(1, activation=C.tanh, input_rank=1)
         logits=C.sequence.softmax(dense(doc))
@@ -201,11 +202,9 @@ class BiDAF(PolyMath):
         att_context_reg = C.splice(c_processed, c2q, q2c_out, 
                     c_processed[:common_dim]*c2q[:common_dim], c2c)
         #att_context_cls = C.splice(c_processed, c2q, q2c_out, c_processed*c2q)
-        #res = C.combine([att_context_cls, att_context_reg])
+        res = C.combine([att_context_reg, q_attn, hh_attn])
 
-        self.info['attn1']=q_attn
-        self.info['attn2']=hh_attn
-        return C.as_block(att_context_reg,
+        return C.as_block(res,
             [(c_processed, context), (q_processed, query)],
             'attention_layer',
             'attention_layer')
