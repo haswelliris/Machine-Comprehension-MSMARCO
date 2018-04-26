@@ -338,7 +338,8 @@ class BiElmo(BiDAF):
         # attention layer
         c_enhance = C.splice(c_processed, c_elmo)
         q_enhance = C.splice(q_processed, q_elmo) 
-        att_context = self.attention_layer(c_enhance, q_enhance, dim=2*self.hidden_dim+1024)
+        att_context,self.info['attn1'], self.info['attn2'] = \
+            self.attention_layer(c_enhance, q_enhance, dim=2*self.hidden_dim+1024).outputs
         self_context = self.self_attention_layer(att_context) # 2*hidden_dim
         # modeling layer
         mod_context = self.modeling_layer(self_context)
@@ -385,7 +386,7 @@ class BiFeature(BiDAF):
         q_processedf = C.splice(q_processed, qf)
         c_processedf = self.word_level_drop(c_processedf)
         # attention layer output:[#,c][8*hidden_dim]
-        att_context_reg = self.attention_layer(c_processedf, q_processedf,\
+        att_context_reg,self.info['attn1'], self.info['attn2'] = self.attention_layer(c_processedf, q_processedf,\
                     dimc=2*self.hidden_dim+3, dimq=2*self.hidden_dim+1, common_dim=2*self.hidden_dim)
 
         # modeling layer output:[#][1] [#,c][2*hidden_dim]
@@ -408,7 +409,7 @@ class BiFeature(BiDAF):
         # loss
         cls_loss = focal_loss(mod_cls_logits,slc)
         # span loss [#][1] + cls loss [#][1]
-        new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + 0.1*cls_loss
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae) + cls_loss
 
         metric = C.classification_error(mod_cls_logits, slc)
         res = C.combine([start_logits, end_logits, mod_cls_logits])
