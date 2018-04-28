@@ -22,6 +22,7 @@ class RNet(polymath.PolyMath):
 
         self.convs = model_config['char_convs']
         self.highway_layers = model_config['highway_layers']
+        self.info={}
 
     def charcnn(self, x):
         conv_out = C.layers.Sequential([
@@ -92,9 +93,43 @@ class RNet(polymath.PolyMath):
             'dot attention'
         )
 
-    def gate_attention_layer(self, inputs, memory):
+    def simi_attention(self, input, memory):
+        '''
+        return:
+        memory weighted vectors over input [#,c][d]
+        weight
+        '''
+        input_ph = C.placeholder() # [#,c][d]
+        mem_ph = C.placeholder() # [#,q][d]
+        
+        input_dense = Dense(2*self.hidden_dim, bias=False,input_rank=1)
+        mem_dense = Dense(2*self.hidden_dim, bias=False,input_rank=1)
+        bias = C.Parameter(shape=(2*self.hidden_dim,), init=0.0)
+        weight_dense = Dense(1,bias=False, input_rank=1)
+
+        proj_inp = input_dense(input_ph) # [#,c][d]
+        proj_mem = mem_dense(mem_ph) # [#,q][d]
+        unpack_memory, mem_mask = C.sequence.unpack(proj_mem, 0).outputs # [#][*=q, d] [#][*=q]
+        expand_mem = C.sequence.broadcast_as(unpack_memory, proj_inp) # [#,c][*=q,d]
+        expand_mask = C.sequence.broadcast_as(mem_mask, proj_inp) # [#,c][*=q]
+        matrix = C.reshape( weight_dense(C.tanh(proj_inp + expand_mem + bias)) , (-1,)) # [#,c][*=q]
+        matrix = C.element_select(expand_mask, matrix, -1e30)
+        logits = C.softmax(matrix, axis=0) # [#,c][*=q]
+        weight_mem = C.reduce_sum(C.reshape(logits, (-1,1))*expand_mem, axis=0) # [#,c][d]
+        weight_mem = C.reshape(weight_mem, (-1,))
+
+        return C.as_block(
+            C.combine(weight_mem, logits),
+            [(input_ph, input),(mem_ph, memory)],
+            'simi_attention','simi_attention'
+        )
+    def gate_attention_layer(self, inputs, memory, common_len=None):
         # [#,c][2*d] [#,c][*=q,1]
-        qc_attn, attn_weight = self.dot_attention(inputs, memory).outputs
+        # qc_attn, attn_weight = self.dot_attention(inputs, memory).outputs
+        qc_attn, attn_weight = self.simi_attention(inputs, memory).outputs
+        if common_len is not None:
+            inputs = inputs[:common_len]
+            qc_attn = qc_attn[:common_len]
         cont_attn = C.splice(inputs, qc_attn) # [#,c][4*d]
 
         dense = Dropout(self.dropout) >> Dense(4*self.hidden_dim, activation=C.sigmoid, input_rank=1) >> Label('gate')
@@ -176,6 +211,49 @@ class RNet(polymath.PolyMath):
         
         start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph) # [#, c][1]
         
+        # loss
+        start_loss = seq_loss(start_logits, ab)
+        end_loss = seq_loss(end_logits, ae)
+        # paper_loss = start_loss + end_loss
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
+        self._model = C.combine([start_logits,end_logits])
+        self._loss = new_loss
+        return self._model, self._loss, self._input_phs
+class RNetFeature(RNet):
+    def __init__(self, config_file):
+        super(RNetFeature, self).__init__(config_file)
+    def build_model(self):
+        c = C.Axis.new_unique_dynamic_axis('c')
+        q = C.Axis.new_unique_dynamic_axis('q')
+        b = C.Axis.default_batch_axis()
+        cgw = C.input_variable(self.wg_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cgw')
+        cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
+        qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
+        qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
+        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
+        ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        qf = C.input_variable(1, dynamic_axes=[b,q], is_sparse=False, name='query_feature')
+        df = C.input_variable(3, dynamic_axes=[b,c], is_sparse=False, name='doc_feature')
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
+                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae,
+                     'qf':qf, 'df':df}
+        self._input_phs = input_phs
+        # graph
+        pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
+        enhance_pu = C.splice(pu,df); enhance_qu = C.splice(qu, qf)
+        gate_pu, wei1 = self.gate_attention_layer(enhance_pu, enhance_qu, common_len=2*self.hidden_dim) # [#,c][4*hidden]
+        self.info['attn1'] = wei1
+        pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
+        # self attention 
+        gate_self, wei2 = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
+        self.info['attn2'] = wei2
+        ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
+        init_pu = self.weighted_sum(pu)
+
+        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph) # [#, c][1]
+ 
         # loss
         start_loss = seq_loss(start_logits, ab)
         end_loss = seq_loss(end_logits, ae)
