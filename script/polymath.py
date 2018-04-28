@@ -79,7 +79,7 @@ class PolyMath(object):
         # doc [#, c][d]
         seq_shape=C.sequence.is_first(doc)
         u = C.random.uniform_like(seq_shape, seed=98052)
-        mask = C.element_select(C.greater(u, 0.01),1.0,0)
+        mask = C.element_select(C.greater(u, 0.01),1.0,0.1)
         return mask*doc
     def self_summary(self,doc):
         dense=C.layers.Dense(1, activation=C.tanh, input_rank=1)
