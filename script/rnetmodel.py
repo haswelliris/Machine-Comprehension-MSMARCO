@@ -22,7 +22,6 @@ class RNet(polymath.PolyMath):
 
         self.convs = model_config['char_convs']
         self.highway_layers = model_config['highway_layers']
-        self.info = {}
 
     def charcnn(self, x):
         conv_out = C.layers.Sequential([
@@ -224,18 +223,20 @@ class RNet(polymath.PolyMath):
         input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
                      'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae, 'sl':slc}
         self._input_phs = input_phs
+        self.info['query']=C.splice(qgw, qnw)
+        self.info['doc'] = C.splice(cgw, cnw)
 
         # graph
         pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
         gate_pu, wei1 = self.gate_attention_layer(pu, qu) # [#,c][4*hidden]
-        self.info['attn1'] = wei1
+        self.info['attn1'] = C.assign(wei1)
         print('[RNet build]gate_pu:{}'.format(gate_pu))
         pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
         cls_logits = self.match_layer(qu, pv) # [#][1]
         cls_mask = 1.0 - C.greater_equal(cls_logits,[0.5])
 
         gate_self, wei2 = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
-        self.attn2['attn2'] = wei2
+        self.info['attn2'] = identity(wei2)
         ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
         init_pu = self.weighted_sum(pu)
 
@@ -280,11 +281,14 @@ class RNetFeature(RNet):
                      'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae, 'sl':slc,
                      'qf':qf, 'df':df}
         self._input_phs = input_phs
+        self.info['query']=C.splice(qgw, qnw)
+        self.info['doc'] = C.splice(cgw, cnw)
+
         # graph
         pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
         enhance_pu = C.splice(pu,df); enhance_qu = C.splice(qu, qf)
         gate_pu, wei1 = self.gate_attention_layer(enhance_pu, enhance_qu, common_len=2*self.hidden_dim) # [#,c][4*hidden]
-        self.info['attn1'] = wei1
+        self.info['attn1'] = identity(wei1)
         pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
 
         # artificial features for classification
@@ -297,7 +301,7 @@ class RNetFeature(RNet):
 
         # self attention 
         gate_self, wei2 = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
-        self.info['attn2'] = wei2
+        self.info['attn2'] = identity(wei2)
         ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
         expand_cls_logits = C.sequence.broadcast_as(cls_logits,ph)
         ph = ph*expand_cls_logits # modify hidden representation

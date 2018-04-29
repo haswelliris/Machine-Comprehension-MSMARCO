@@ -359,24 +359,7 @@ def validate_model(test_data, polymath,config_file):
         if not data or not (begin_label in data) or data[begin_label].num_sequences == 0:
             break
         if num_sequences==0: # save attention weight
-            info = getattr(polymath, info)
-            weights = []
-            for k, v in info.items():
-                weights.append(v.eval(data))
-            save_flag = True
-            while save_flag:
-                os.system('ls -la  >> log.log')
-                os.system('ls -la ./output/visuals >> log.log')
-                try:
-                    save_name = os.path.join('outputs','visuals',\
-                        time.strftime("attn_%H%M%S%d", time.localtime()))
-                    print('[VALIDATION] save weight into {}'.format(save_name))
-                    with open(save_name, 'wb') as f:
-                        pickle.dump(weights,f)
-                    save_flag = False
-                except:
-                    print('IO error: try to save model again!')
-                    save_flag = True
+            save_info(polymath, data)
             
         out = model.eval(data, outputs=[begin_logits,end_logits,loss, metric], as_numpy=False)
         testloss = out[loss]
@@ -404,7 +387,42 @@ def validate_model(test_data, polymath,config_file):
             stat_avg[6]))
 
     return loss_avg
-
+def save_info(polymath, data):
+    info = getattr(polymath, 'info',None)
+    weights = []
+    query_ind = []
+    doc_ind = []
+    if info is not None:
+        for k, v in info.items():
+            if k=='query':
+                q = v.eval(data) # list(array(*))
+                for qq in q:
+                    _,indx = np.nonzero(qq)
+                    query_ind.append(indx.copy())
+            elif k=='doc':
+                d = v.eval(data)
+                for dd in d:
+                    _,indx = np.nonzero(dd)
+                    doc_ind.append(indx.copy())
+            else:
+                res = v.eval(data).values()
+                weights.append(tuple([v[0] for v in res])) # many kinds of weights 
+        save_flag = True
+        while save_flag:
+            os.system('ls -la  >> log.log')
+            os.system('ls -la ./output/visual >> log.log')
+            try:
+                save_name = os.path.join('output','visual',\
+                    time.strftime("attn_%H%M%S%d", time.localtime()))
+                print('[VALIDATION] save weight into {}'.format(save_name))
+                with open(save_name, 'wb') as f:
+                    pickle.dump((query_ind, doc_ind, weights),f)
+                save_flag = False
+            except:
+                print('IO error: try to save model again!')
+                save_flag = True
+    else:
+        print('[FUNCTION]save_info: None info to save')
 # map from token to char offset
 def w2c_map(s, words):
     w2c=[]
@@ -488,7 +506,7 @@ def test(test_data, model_path, model_file, config_file, net, gpu=0):
             misc['answer'] = []
             misc['uid'] = []
 def choose_model(config, net):
-    elif net=='rnet':
+    if net=='rnet':
         return RNet(config)
     elif net=='BiFeature':
         return BiFeature(config)
