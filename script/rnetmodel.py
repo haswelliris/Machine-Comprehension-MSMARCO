@@ -60,73 +60,13 @@ class RNet(polymath.PolyMath):
             'input_layer',
             'input_layer')
 
-    def dot_attention(self,inputs, memory):
-        '''
-        @inputs: [#,c][d] a sequence need attention
-        @memory(key): [#,q][d] a sequence input refers to compute similarity(weight)
-        @value: [#,q][d] a sequence input refers to weighted sum
-        @output: [#,c][d] attention vector
-        '''
-        input_ph = C.placeholder(shape=(2*self.hidden_dim,))
-        input_mem = C.placeholder(shape=(2*self.hidden_dim,))
-        with C.layers.default_options(bias=False, activation=C.relu): # all the projections have no bias
-            attn_proj_enc = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1, name="Wqu")
-            attn_proj_dec = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1)
 
-        inputs_ = attn_proj_enc(input_ph) # [#,c][d]
-        memory_ = attn_proj_dec(input_mem) # [#,q][d]
-        unpack_memory, mem_mask = C.sequence.unpack(memory_, 0).outputs # [#][*=q, d], [#][*=q]
-        unpack_memory_expand = C.sequence.broadcast_as(unpack_memory, inputs_) # [#,c][*=q,d]
-
-        matrix = C.times_transpose(inputs_, unpack_memory_expand)/(self.hidden_dim**0.5) # [#,c][*=q]
-        mem_mask_expand = C.sequence.broadcast_as(mem_mask, inputs_) # [#,c][*=q]
-        matrix = C.element_select(mem_mask_expand, matrix, C.constant(-1e+30)) # [#,c][*=q]
-        logits = C.reshape(C.softmax(matrix),(-1,1)) # [#,c][*=q,1]
-        # [#,c][*=q, d]
-        memory_expand = C.sequence.broadcast_as(C.sequence.unpack(input_mem, 0,no_mask_output=True), input_ph)
-        weighted_att = C.reshape(C.reduce_sum(logits*memory_expand, axis=0),(-1,)) # [#,c][d]
-
-        return C.as_block(
-            C.combine(weighted_att, logits),
-            [(input_ph, inputs), (input_mem, memory)],
-            'dot attention',
-            'dot attention'
-        )
-
-    def simi_attention(self, input, memory):
-        '''
-        return:
-        memory weighted vectors over input [#,c][d]
-        weight
-        '''
-        input_ph = C.placeholder() # [#,c][d]
-        mem_ph = C.placeholder() # [#,q][d]
-        
-        input_dense = Dense(2*self.hidden_dim, bias=False,input_rank=1)
-        mem_dense = Dense(2*self.hidden_dim, bias=False,input_rank=1)
-        bias = C.Parameter(shape=(2*self.hidden_dim,), init=0.0)
-        weight_dense = Dense(1,bias=False, input_rank=1)
-
-        proj_inp = input_dense(input_ph) # [#,c][d]
-        proj_mem = mem_dense(mem_ph) # [#,q][d]
-        unpack_memory, mem_mask = C.sequence.unpack(proj_mem, 0).outputs # [#][*=q, d] [#][*=q]
-        expand_mem = C.sequence.broadcast_as(unpack_memory, proj_inp) # [#,c][*=q,d]
-        expand_mask = C.sequence.broadcast_as(mem_mask, proj_inp) # [#,c][*=q]
-        matrix = C.reshape( weight_dense(C.tanh(proj_inp + expand_mem + bias)) , (-1,)) # [#,c][*=q]
-        matrix = C.element_select(expand_mask, matrix, -1e30)
-        logits = C.softmax(matrix, axis=0) # [#,c][*=q]
-        weight_mem = C.reduce_sum(C.reshape(logits, (-1,1))*expand_mem, axis=0) # [#,c][d]
-        weight_mem = C.reshape(weight_mem, (-1,))
-
-        return C.as_block(
-            C.combine(weight_mem, logits),
-            [(input_ph, input),(mem_ph, memory)],
-            'simi_attention','simi_attention'
-        )
-    def gate_attention_layer(self, inputs, memory, common_len=None):
+    def gate_attention_layer(self, inputs, memory, common_len=None, att_kind='simi'):
         # [#,c][2*d] [#,c][*=q,1]
-        # qc_attn, attn_weight = self.dot_attention(inputs, memory).outputs
-        qc_attn, attn_weight = self.simi_attention(inputs, memory).outputs
+        if att_kind=='dot':
+            qc_attn, attn_weight = self.dot_attention(inputs, memory).outputs
+        else:
+            qc_attn, attn_weight = self.simi_attention(inputs, memory).outputs
         if common_len is not None:
             inputs = inputs[:common_len]
             qc_attn = qc_attn[:common_len]
@@ -208,7 +148,7 @@ class RNet(polymath.PolyMath):
         self.info['attn1'] = wei1*1.0
         print('[RNet build]gate_pu:{}'.format(gate_pu))
         pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
-        gate_self, wei2 = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
+        gate_self, wei2 = self.gate_attention_layer(pv,pv, att_kind='dot') # [#,c][4*hidden]
         self.info['attn2'] = wei2*1.0
         ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
         init_pu = self.weighted_sum(pu)
