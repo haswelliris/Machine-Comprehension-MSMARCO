@@ -1,7 +1,7 @@
 import cntk as C
 import numpy as np
-from polymath import BiDAFInd, BiDAF, BiDAFCoA, BiElmo, BiFeature
-from rnetmodel import RNet
+from polymath import BiDAF, BiElmo, BiFeature
+from rnetmodel import RNet, RNetFeature
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 from helpers import print_para_info
 import tsv2ctf
@@ -237,7 +237,7 @@ def train(data_path, model_path, log_file, config_file, model_name, net, restore
                 if num_seq >= epoch_size:
                     break
             trainer.summarize_training_progress()
-            if epoch % training_config['save_freq']==0:
+            if epoch+1 % training_config['save_freq']==0:
                 save_name = os.path.join(model_path,'{}_{}'.format(model_name,epoch))
                 print('[TRAIN] save checkpoint into {}'.format(save_name))
                 save_flag = True
@@ -337,6 +337,8 @@ def validate_model(test_data, polymath,config_file):
         data = mb_source.next_minibatch(minibatch_size, input_map=input_map)
         if not data or not (begin_label in data) or data[begin_label].num_sequences == 0:
             break
+        if num_sequences==0: # save attention weight
+            save_info(polymath, data)
         out = model.eval(data, outputs=[begin_logits,end_logits,loss], as_numpy=False)
         testloss = out[loss]
         g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
@@ -360,7 +362,38 @@ def validate_model(test_data, polymath,config_file):
             stat_avg[6]))
 
     return loss_avg
-
+def save_info(polymath, data):
+    info = getattr(polymath, 'info',None)
+    weights = []
+    query_ind = []
+    doc_ind = []
+    if info is not None:
+        for k, v in info.items():
+            if k=='query':
+                q = v.eval(data) # list(array(*))
+                for qq in q:
+                    _,indx = np.nonzero(qq)
+                    query_ind.append(indx.copy())
+            elif k=='doc':
+                d = v.eval(data)
+                for dd in d:
+                    _,indx = np.nonzero(dd)
+                    doc_ind.append(indx.copy())
+            else:
+                res = v.eval(data) # [array for samples]
+                weights.append(res) # many kinds of weights 
+        save_flag = True
+        while save_flag:
+            os.system('ls -la  >> log.log')
+            os.system('ls -la ./output/visual >> log.log')
+            save_name = os.path.join('output','visual',\
+                time.strftime("attn_%H%M%S%d", time.localtime()))
+            print('[VALIDATION] save weight into {}'.format(save_name))
+            with open(save_name, 'wb') as f:
+                pickle.dump((query_ind, doc_ind, weights),f)
+            save_flag = False
+    else:
+        print('[FUNCTION]save_info: None info to save')
 # map from token to char offset
 def w2c_map(s, words):
     w2c=[]
@@ -434,12 +467,10 @@ def test(test_data, model_path, model_file, config_file, net, gpu=0):
 def choose_model(config_file,net):
     if net=='BiDAF':
         polymath = BiDAF(config_file)
-    if net=='BiDAFInd':
-        polymath = BiDAF(config_file)
     if net=='rnet':
         polymath = RNet(config_file)
-    if net=='BiDAFCoA':
-        polymath = BiDAFCoA(config_file)
+    if net=='rnetFeature':
+        polymath = RNetFeature(config_file)
     if net=='BiFeature':
         polymath = BiFeature(config_file)
     if net=='BiElmo':
@@ -462,7 +493,7 @@ if __name__=='__main__':
     parser.add_argument('-model', '--model', help='Model file name, also used for saving', required=False, default='default')
     parser.add_argument('-gpu','--gpu', help='designate which gpu to use', type=int, default=0)
     parser.add_argument('-net', '--net', help='use chosen network model', required=False, default='BiDAF',
-                        choices=['BiDAF','BiDAFInd','rnet','BiDAFCoA','BiFeature','BiElmo'])
+                        choices=['BiDAF','BiDAFInd','rnet','BiDAFCoA','rnetFeature','BiElmo'])
     args = vars(parser.parse_args())
     model_path = os.path.join(args['outputdir'],"models")
     if args['datadir'] is not None:

@@ -296,6 +296,8 @@ class BiElmo(BiDAF):
         input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
                         'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
         self._input_phs = input_phs
+        #seif.info['query'] = C.splice(qgw, qnw)
+        #self.info['doc'] = C.splice(cgw, gnw)
         elmo_encoder = self.__elmo_fac.build()
         #input layer
         reduction_cc = C.reshape(cc,(-1,))
