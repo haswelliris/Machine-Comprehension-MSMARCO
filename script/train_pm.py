@@ -1,6 +1,6 @@
 import cntk as C
 import numpy as np
-from polymath import BiDAF, BiElmo, BiFeature
+from polymath import BiDAF, BiElmo, BiFeature, BiSAF
 from rnetmodel import RNet, RNetFeature
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 from helpers import print_para_info
@@ -144,6 +144,7 @@ def train(data_path, model_path, log_file, config_file, model_name, net, restore
     train_data_file = os.path.join(data_path, training_config['train_data'])
     train_data_ext = os.path.splitext(train_data_file)[-1].lower()
     model_file = os.path.join(model_path, model_name)
+    print(model_file)
 
     # training setting
 
@@ -467,14 +468,16 @@ def test(test_data, model_path, model_file, config_file, net, gpu=0):
 def choose_model(config_file,net):
     if net=='BiDAF':
         polymath = BiDAF(config_file)
-    if net=='rnet':
+    if net=='RNet':
         polymath = RNet(config_file)
-    if net=='rnetFeature':
+    if net=='RNetFeature':
         polymath = RNetFeature(config_file)
     if net=='BiFeature':
         polymath = BiFeature(config_file)
     if net=='BiElmo':
         polymath = BiElmo(config_file)
+    if net=='BiSAF':
+        polymath = BiSAF(config_file)
     return polymath
 if __name__=='__main__':
     # default Paths relative to current python file.
@@ -493,7 +496,7 @@ if __name__=='__main__':
     parser.add_argument('-model', '--model', help='Model file name, also used for saving', required=False, default='default')
     parser.add_argument('-gpu','--gpu', help='designate which gpu to use', type=int, default=0)
     parser.add_argument('-net', '--net', help='use chosen network model', required=False, default='BiDAF',
-                        choices=['BiDAF','BiDAFInd','rnet','BiDAFCoA','rnetFeature','BiElmo'])
+                        choices=['BiDAF','RNet','RNetFeature','BiElmo', 'BiSAF','BiFeature'])
     args = vars(parser.parse_args())
     model_path = os.path.join(args['outputdir'],"models")
     if args['datadir'] is not None:

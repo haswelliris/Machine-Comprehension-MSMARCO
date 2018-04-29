@@ -80,7 +80,81 @@ class PolyMath(object):
         u = C.random.uniform_like(seq_shape, seed=98052)
         mask = C.element_select(C.greater(u, 0.08),1.0,0)
         return doc*mask
+    def dot_attention(self,inputs, memory):
+        '''
+        @inputs: [#,c][d] a sequence need attention
+        @memory(key): [#,q][d] a sequence input refers to compute similarity(weight)
+        @value: [#,q][d] a sequence input refers to weighted sum
+        @output: [#,c][d] attention vector
+        '''
+        input_ph = C.placeholder()
+        input_mem = C.placeholder()
+        with C.layers.default_options(bias=False, activation=C.relu): # all the projections have no bias
+            attn_proj_enc = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1, name="Wqu")
+            attn_proj_dec = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1)
+
+        inputs_ = attn_proj_enc(input_ph) # [#,c][d]
+        memory_ = attn_proj_dec(input_mem) # [#,q][d]
+        unpack_memory, mem_mask = C.sequence.unpack(memory_, 0).outputs # [#][*=q, d], [#][*=q]
+        unpack_memory_expand = C.sequence.broadcast_as(unpack_memory, inputs_) # [#,c][*=q,d]
+
+        matrix = C.times_transpose(inputs_, unpack_memory_expand)/(self.hidden_dim**0.5) # [#,c][*=q]
+        mem_mask_expand = C.sequence.broadcast_as(mem_mask, inputs_) # [#,c][*=q]
+        matrix = C.element_select(mem_mask_expand, matrix, C.constant(-1e+30)) # [#,c][*=q]
+        logits = C.reshape(C.softmax(matrix),(-1,1)) # [#,c][*=q,1]
+        # [#,c][*=q, d]
+        memory_expand = C.sequence.broadcast_as(C.sequence.unpack(input_mem, 0,no_mask_output=True), input_ph)
+        weighted_att = C.reshape(C.reduce_sum(logits*memory_expand, axis=0),(-1,)) # [#,c][d]
+
+        return C.as_block(
+            C.combine(weighted_att, logits),
+            [(input_ph, inputs), (input_mem, memory)],
+            'dot attention',
+            'dot attention'
+        )
+    def simi_attention(self, input, memory):
+        '''
+        return:
+        memory weighted vectors over input [#,c][d]
+        weight
+        '''
+        input_ph = C.placeholder() # [#,c][d]
+        mem_ph = C.placeholder() # [#,q][d]
         
+        input_dense = Dense(2*self.hidden_dim, bias=False,input_rank=1)
+        mem_dense = Dense(2*self.hidden_dim, bias=False,input_rank=1)
+        bias = C.Parameter(shape=(2*self.hidden_dim,), init=0.0)
+        weight_dense = Dense(1,bias=False, input_rank=1)
+
+        proj_inp = input_dense(input_ph) # [#,c][d]
+        proj_mem = mem_dense(mem_ph) # [#,q][d]
+        unpack_memory, mem_mask = C.sequence.unpack(proj_mem, 0).outputs # [#][*=q, d] [#][*=q]
+        expand_mem = C.sequence.broadcast_as(unpack_memory, proj_inp) # [#,c][*=q,d]
+        expand_mask = C.sequence.broadcast_as(mem_mask, proj_inp) # [#,c][*=q]
+        matrix = C.reshape( weight_dense(C.tanh(proj_inp + expand_mem + bias)) , (-1,)) # [#,c][*=q]
+        matrix = C.element_select(expand_mask, matrix, -1e30)
+        logits = C.softmax(matrix, axis=0) # [#,c][*=q]
+        weight_mem = C.reduce_sum(C.reshape(logits, (-1,1))*expand_mem, axis=0) # [#,c][d]
+        weight_mem = C.reshape(weight_mem, (-1,))
+
+        return C.as_block(
+            C.combine(weight_mem, logits),
+            [(input_ph, input),(mem_ph, memory)],
+            'simi_attention','simi_attention'
+        )
+    def multiHead(self, context, query, head=8):
+        cph=C.placeholder()
+        qph=C.placeholder()
+        res = cph
+        for i in range(head):
+            dense_q = C.layers.Dense(self.hidden_dim, activation=C.relu,
+                bias=False, input_rank=1, name='headq_{}'.format(i))(qph)
+            dense_c = C.layers.Dense(self.hidden_dim, activation=C.relu,
+                bias=False, input_rank=1, name='headc_{}'.format(i))(cph)
+            attn,_ = self.dot_attention(context,query).outputs
+            res = C.splice(res, attn)
+            
+        return C.as_block(res,[(cph, context),(qph, query)],'multiHead','multiHead')
     def build_model(self):
         raise NotImplementedError
     @property
@@ -110,14 +184,30 @@ class BiDAF(PolyMath):
         self.convs = model_config['char_convs']
         self.highway_layers = model_config['highway_layers']
         self.two_step = model_config['two_step']
-
+    def get_inputs(self):
+        if self._input_phs is not None:
+            return self._input_phs
+        c = C.Axis.new_unique_dynamic_axis('c')
+        q = C.Axis.new_unique_dynamic_axis('q')
+        b = C.Axis.default_batch_axis()
+        cgw = C.input_variable(self.wg_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cgw')
+        cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
+        qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
+        qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
+        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
+        ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
+                        'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
+        self._input_phs = input_phs
+        return self._input_phs
     def charcnn(self, x):
         conv_out = C.layers.Sequential([
             C.layers.Embedding(self.char_emb_dim),
             C.layers.Dropout(self.dropout),
             C.layers.Convolution2D((5,self.char_emb_dim), self.convs, activation=C.relu, init=C.glorot_uniform(), bias=True, init_bias=0, name='charcnn_conv')])(x)
         return C.reduce_max(conv_out, axis=1) # workaround cudnn failure in GlobalMaxPooling
-
     def input_layer(self,cgw,cnw,cc,qgw,qnw,qc):
         cgw_ph = C.placeholder()
         cnw_ph = C.placeholder()
@@ -150,7 +240,6 @@ class BiDAF(PolyMath):
             [(cgw_ph, cgw),(cnw_ph, cnw),(cc_ph, cc),(qgw_ph, qgw),(qnw_ph, qnw),(qc_ph, qc)],
             'input_layer',
             'input_layer')
-
     def attention_layer(self, context, query, dim):
         q_processed = C.placeholder(shape=(dim,))
         c_processed = C.placeholder(shape=(dim,))
@@ -188,13 +277,11 @@ class BiDAF(PolyMath):
         q2c_out = c_processed * q2c
 
         att_context = C.splice(c_processed, c2q, c_processed * c2q, q2c_out)
-
         return C.as_block(
-            att_context,
+            res,
             [(c_processed, context), (q_processed, query)],
             'attention_layer',
             'attention_layer')
-
     def modeling_layer(self, attention_context):
         att_context = C.placeholder()
         #modeling layer
@@ -210,7 +297,6 @@ class BiDAF(PolyMath):
             [(att_context, attention_context)],
             'modeling_layer',
             'modeling_layer')
-
     def output_layer(self, attention_context, modeling_context):
         att_context = C.placeholder()
         mod_context = C.placeholder()
@@ -229,28 +315,14 @@ class BiDAF(PolyMath):
             [(att_context, attention_context), (mod_context, modeling_context)],
             'output_layer',
             'output_layer')
-
     def build_model(self):
-        c = C.Axis.new_unique_dynamic_axis('c')
-        q = C.Axis.new_unique_dynamic_axis('q')
-        b = C.Axis.default_batch_axis()
-        cgw = C.input_variable(self.wg_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cgw')
-        cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
-        qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
-        qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
-        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
-        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
-        ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
-        ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
-        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
-                        'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
-        self._input_phs = input_phs
+        self.get_inputs()
 
         #input layer
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
 
         # attention layer
-        att_context = self.attention_layer(c_processed, q_processed, dim=2*self.hidden_dim)
+        att_context, wei1 = self.attention_layer(c_processed, q_processed,dim=2*self.hidden_dim).outputs
 
         # modeling layer
         mod_context = self.modeling_layer(att_context)
@@ -265,23 +337,10 @@ class BiDAF(PolyMath):
         self._model = C.combine([start_logits,end_logits])
         self._loss = new_loss
         return self._model, self._loss, self._input_phs
-
-class BiElmo(BiDAF):
+class BiFeature(BiDAF):
     def __init__(self, config_file):
-        super(BiElmo, self).__init__(config_file)
-        self.__elmo_fac = ElmoEmbedder()
-    def self_attention_layer(self, context):
-        dense = C.layers.Dense(2*self.hidden_dim, activation=C.relu)
-        rnn = OptimizedRnnStack(self.hidden_dim,bidirectional=True, use_cudnn=self.use_cudnn)
-        context1 = dense(context)
-        process_context = rnn(context1)
-        # residual attention
-        att_context = self.attention_layer(process_context,process_context,self.hidden_dim*2)
-        dense2 = C.layers.Dense(2*self.hidden_dim,activation=C.relu)(att_context)
-        res = dense2+context1
-        return dense2
-
-    def build_model(self):
+        super(BiFeature, self).__init__(config_file)
+    def get_inputs(self):
         c = C.Axis.new_unique_dynamic_axis('c')
         q = C.Axis.new_unique_dynamic_axis('q')
         b = C.Axis.default_batch_axis()
@@ -293,9 +352,97 @@ class BiElmo(BiDAF):
         qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
         ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        qf = C.input_variable(1, dynamic_axes=[b,q], is_sparse=False, name='query_feature')
+        df = C.input_variable(3, dynamic_axes=[b,c], is_sparse=False, name='doc_feature')
         input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
-                        'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
+                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae,
+                     'df':df, 'qf':qf}
         self._input_phs = input_phs
+        return self._input_phs
+    def attention_layer(self, context, query, dimc, dimq, common_dim):
+        q_processed = C.placeholder(shape=(dimq,))
+        c_processed = C.placeholder(shape=(dimc,))
+
+        #convert query's sequence axis to static
+        qvw, qvw_mask = C.sequence.unpack(q_processed, padding_value=0).outputs
+
+        # so W * [h; u; h.* u] becomes w1 * h + w2 * u + w4 * (h.*u)
+        ws1 = C.parameter(shape=(dimc, 1), init=C.glorot_uniform())
+        ws2 = C.parameter(shape=(dimq, 1), init=C.glorot_uniform())
+        ws3 = C.parameter(shape=(dimc, 1), init=C.glorot_uniform())
+        ws4 = C.parameter(shape=(1, common_dim), init=C.glorot_uniform())
+        att_bias = C.parameter(shape=(), init=0)
+
+        wh = C.times (c_processed, ws1) # [#,c][1]
+        wu = C.reshape(C.times (qvw, ws2), (-1,)) # [#][*]
+        # qvw*ws4: [#][*,200], whu:[#,c][*]
+        whu = C.reshape(C.reduce_sum(
+            c_processed[:common_dim] *\
+            C.sequence.broadcast_as(qvw[:,:common_dim] * ws4, c_processed), axis=1), (-1,))
+        S1 = wh + C.sequence.broadcast_as(wu, c_processed) + att_bias # [#,c][*]
+        qvw_mask_expanded = C.sequence.broadcast_as(qvw_mask, c_processed)
+        S1 = C.element_select(qvw_mask_expanded, S1, C.constant(-1e+30))
+        q_attn = C.reshape(C.softmax(S1), (-1,1)) # [#,c][*,1]
+        c2q = C.reshape(C.reduce_sum(C.sequence.broadcast_as(qvw, q_attn) * q_attn, axis=0),(-1)) # [#,c][200]
+
+        max_col = C.reduce_max(S1) # [#,c][1] 最大的q中的单词
+        c_attn = C.sequence.softmax(max_col) # [#,c][1] 对c中的每一个单词做softmax
+
+        htilde = C.sequence.reduce_sum(c_processed * c_attn) # [#][200]
+        q2c = C.sequence.broadcast_as(htilde, c_processed) # [#,c][200]
+        q2c_out = c_processed[:common_dim] * q2c[:common_dim]
+
+        # 原始文档，题目表示，文章重点表示，匹配度表示，文章上下文表示
+        att_context_reg = C.splice(c_processed, c2q, q2c_out, 
+                    c_processed[:common_dim]*c2q[:common_dim])
+
+        return \
+        C.as_block(att_context_reg,
+            [(c_processed, context), (q_processed, query)],
+            'attention_layer',
+            'attention_layer'),\
+        C.as_block(q_attn, [(c_processed, context), (q_processed, query)],
+            'attention_weight',
+            'attention_weight')
+    def build_model(self):
+        self.get_inputs()
+        #input layer
+        cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
+        c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+        c_processed = C.splice(c_processed, df)
+        q_processed = C.splice(q_processed, qf)
+        # attention layer output:[#,c][8*hidden_dim]
+        att_context, wei1 = self.attention_layer(c_processed, q_processed,
+            dimc=2*self.hidden_dim+3, dimq=2*self.hidden_dim+1,
+            common_dim=2*self.hidden_dim)
+        # modeling layer output:[#][1] [#,c][2*hidden_dim]
+        mod_context_reg = self.modeling_layer(att_context)
+        # output layer
+        mod_context_reg = C.splice(mod_context_reg, df)
+        start_logits, end_logits = self.output_layer(att_context, mod_context_reg).outputs
+
+        # loss
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
+        res = C.combine([start_logits, end_logits])
+        self._model = res
+        self._loss = new_loss
+        return self._model, self._loss, self._input_phs
+class BiElmo(BiDAF):
+    def __init__(self, config_file):
+        super(BiElmo, self).__init__(config_file)
+        self.__elmo_fac = ElmoEmbedder()
+    def self_attention_layer(self, context):
+        dense = C.layers.Dense(2*self.hidden_dim, activation=C.relu)
+        rnn = OptimizedRnnStack(self.hidden_dim,bidirectional=True, use_cudnn=self.use_cudnn)
+        context1 = dense(context)
+        process_context = rnn(context1)
+        # residual attention
+        att_context, wei = self.attention_layer(process_context,process_context,self.hidden_dim*2).outputs
+        dense2 = C.layers.Dense(2*self.hidden_dim,activation=C.relu)(att_context)
+        res = dense2+context1
+        return dense2
+    def build_model(self):
+        self.get_inputs()
         #seif.info['query'] = C.splice(qgw, qnw)
         #self.info['doc'] = C.splice(cgw, gnw)
         elmo_encoder = self.__elmo_fac.build()
@@ -309,7 +456,9 @@ class BiElmo(BiDAF):
         # attention layer
         c_enhance = C.splice(c_processed, c_elmo)
         q_enhance = C.splice(q_processed, q_elmo) 
-        att_context = self.attention_layer(c_enhance, q_enhance, dim=2*self.hidden_dim+1024)
+        att_context = self.attention_layer(c_enhance, q_enhance,
+            dimc= 2*self.hidden_dim+1024,dimq=2*self.hidden_dim+1024,
+            common_dim=2*self.hidden_dim+1024)
         self_context = self.self_attention_layer(att_context) # 2*hidden_dim
         # modeling layer
         mod_context = self.modeling_layer(self_context)
@@ -327,43 +476,32 @@ class BiElmo(BiDAF):
         self._loss = new_loss
         return self._model, self._loss, self._input_phs
    
-class BiFeature(BiDAF):
+class BiSAF(BiFeature):
     def __init__(self, config_file):
-        super(BiFeature, self).__init__(config_file)
+        super(BiSAF, self).__init__(config_file)
     def build_model(self):
-        c = C.Axis.new_unique_dynamic_axis('c')
-        q = C.Axis.new_unique_dynamic_axis('q')
-        b = C.Axis.default_batch_axis()
-        cgw = C.input_variable(self.wg_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cgw')
-        cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
-        qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
-        qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
-        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
-        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
-        ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
-        ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
-        # qf = C.input_variable(1, dynamic_axes=[b,q], is_sparse=False, name='query_feature')
-        df = C.input_variable(3, dynamic_axes=[b,c], is_sparse=False, name='doc_feature')
-        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
-                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae,
-                     'df':df}
-        self._input_phs = input_phs
-        #input layer
-        cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
+        self.get_inputs()
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
-        # attention layer output:[#,c][8*hidden_dim]
-        att_context = self.attention_layer(c_processed, q_processed, dim=2*self.hidden_dim)
-        # modeling layer output:[#][1] [#,c][2*hidden_dim]
-        att_context= C.splice(att_context, df)
-        mod_context_reg = self.modeling_layer(att_context)
+        c_processed = C.splice(c_processed, df)
+        q_processed = C.splice(q_processed, qf)
+        # attention layer output:[#,c][10*hidden_dim]
+        att_context, wei1 = self.attention_layer(c_processed, q_processed, dimc=2*self.hidden_dim+3,
+            dimq=2*self.hidden_dim+1,
+            common_dim=2*self.hidden_dim)
+        self_context = self.multiHead(att_context, att_context) 
+
+        # modeling layer
+        mod_context = self.modeling_layer(self_context)
+        mod_context = C.splice(mod_context, df)
+
         # output layer
-        start_logits, end_logits = self.output_layer(att_context, mod_context_reg).outputs
+        start_logits, end_logits = self.output_layer(att_context, mod_context).outputs
 
         # loss
-        # span loss [#][1] + cls loss [#][1]
+        start_loss = seq_loss(start_logits, ab)
+        end_loss = seq_loss(end_logits, ae)
         new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
-        res = C.combine([start_logits, end_logits])
-        self._model = res
+        self._model = C.combine([start_logits,end_logits])
         self._loss = new_loss
         return self._model, self._loss, self._input_phs
 # ====================================
