@@ -4,8 +4,9 @@ from helpers import *
 import pickle
 import importlib
 import os
-from cntk.initializer import glorot_uniform
+from cntk.initializer import glorot_uniform, xavier
 from convert_elmo import ElmoEmbedder
+from cntk.layers import *
 
 class PolyMath(object):
     def __init__(self, config_file):
@@ -80,7 +81,7 @@ class PolyMath(object):
         u = C.random.uniform_like(seq_shape, seed=98052)
         mask = C.element_select(C.greater(u, 0.08),1.0,0)
         return doc*mask
-    def dot_attention(self,inputs, memory):
+    def dot_attention(self,inputs, memory, dim):
         '''
         @inputs: [#,c][d] a sequence need attention
         @memory(key): [#,q][d] a sequence input refers to compute similarity(weight)
@@ -90,15 +91,15 @@ class PolyMath(object):
         input_ph = C.placeholder()
         input_mem = C.placeholder()
         with C.layers.default_options(bias=False, activation=C.relu): # all the projections have no bias
-            attn_proj_enc = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1, name="Wqu")
-            attn_proj_dec = C.layers.Dense(self.hidden_dim, init=glorot_uniform(), input_rank=1)
+            attn_proj_enc = C.layers.Dense(dim, init=glorot_uniform(), input_rank=1, name="Wqu")
+            attn_proj_dec = C.layers.Dense(dim, init=glorot_uniform(), input_rank=1)
 
         inputs_ = attn_proj_enc(input_ph) # [#,c][d]
         memory_ = attn_proj_dec(input_mem) # [#,q][d]
         unpack_memory, mem_mask = C.sequence.unpack(memory_, 0).outputs # [#][*=q, d], [#][*=q]
         unpack_memory_expand = C.sequence.broadcast_as(unpack_memory, inputs_) # [#,c][*=q,d]
 
-        matrix = C.times_transpose(inputs_, unpack_memory_expand)/(self.hidden_dim**0.5) # [#,c][*=q]
+        matrix = C.times_transpose(inputs_, unpack_memory_expand)/(dim**0.5) # [#,c][*=q]
         mem_mask_expand = C.sequence.broadcast_as(mem_mask, inputs_) # [#,c][*=q]
         matrix = C.element_select(mem_mask_expand, matrix, C.constant(-1e+30)) # [#,c][*=q]
         logits = C.reshape(C.softmax(matrix),(-1,1)) # [#,c][*=q,1]
@@ -142,18 +143,18 @@ class PolyMath(object):
             [(input_ph, input),(mem_ph, memory)],
             'simi_attention','simi_attention'
         )
-    def multiHead(self, context, query, head=8):
+    def multiHead(self, context, query, outdim, head=4):
         cph=C.placeholder()
         qph=C.placeholder()
-        res = cph
+        atts = []
         for i in range(head):
-            dense_q = C.layers.Dense(self.hidden_dim, activation=C.relu,
+            dense_q = C.layers.Dense(outdim, activation=C.relu, init=xavier(1.377),
                 bias=False, input_rank=1, name='headq_{}'.format(i))(qph)
-            dense_c = C.layers.Dense(self.hidden_dim, activation=C.relu,
+            dense_c = C.layers.Dense(outdim, activation=C.relu, init=xavier(1.377),
                 bias=False, input_rank=1, name='headc_{}'.format(i))(cph)
-            attn,_ = self.dot_attention(context,query).outputs
-            res = C.splice(res, attn)
-            
+            attn,_ = self.dot_attention(dense_c,dense_q,outdim).outputs
+            atts.append(attn)
+        res = C.splice(*atts)
         return C.as_block(res,[(cph, context),(qph, query)],'multiHead','multiHead')
     def build_model(self):
         raise NotImplementedError
@@ -277,6 +278,7 @@ class BiDAF(PolyMath):
         q2c_out = c_processed * q2c
 
         att_context = C.splice(c_processed, c2q, c_processed * c2q, q2c_out)
+        res = C.combine(att_context, C.reshape(q_attn,(-1,)))
         return C.as_block(
             res,
             [(c_processed, context), (q_processed, query)],
@@ -316,13 +318,15 @@ class BiDAF(PolyMath):
             'output_layer',
             'output_layer')
     def build_model(self):
-        self.get_inputs()
-
+        phmap = self.get_inputs()        
+        ab = phmap['ab']
+        ae = phmap['ae']
         #input layer
-        c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+        c_processed, q_processed = self.input_layer(phmap['cgw'],phmap['cnw'],phmap['cc'],\
+            phmap['qgw'],phmap['qnw'],phmap['qc']).outputs
 
         # attention layer
-        att_context, wei1 = self.attention_layer(c_processed, q_processed,dim=2*self.hidden_dim).outputs
+        att_context, wei = self.attention_layer(c_processed, q_processed,dim=2*self.hidden_dim).outputs
 
         # modeling layer
         mod_context = self.modeling_layer(att_context)
@@ -341,6 +345,8 @@ class BiFeature(BiDAF):
     def __init__(self, config_file):
         super(BiFeature, self).__init__(config_file)
     def get_inputs(self):
+        if self._input_phs is not None:
+            return self._input_phs
         c = C.Axis.new_unique_dynamic_axis('c')
         q = C.Axis.new_unique_dynamic_axis('q')
         b = C.Axis.default_batch_axis()
@@ -369,7 +375,6 @@ class BiFeature(BiDAF):
         # so W * [h; u; h.* u] becomes w1 * h + w2 * u + w4 * (h.*u)
         ws1 = C.parameter(shape=(dimc, 1), init=C.glorot_uniform())
         ws2 = C.parameter(shape=(dimq, 1), init=C.glorot_uniform())
-        ws3 = C.parameter(shape=(dimc, 1), init=C.glorot_uniform())
         ws4 = C.parameter(shape=(1, common_dim), init=C.glorot_uniform())
         att_bias = C.parameter(shape=(), init=0)
 
@@ -395,26 +400,28 @@ class BiFeature(BiDAF):
         # 原始文档，题目表示，文章重点表示，匹配度表示，文章上下文表示
         att_context_reg = C.splice(c_processed, c2q, q2c_out, 
                     c_processed[:common_dim]*c2q[:common_dim])
-
+        res = C.combine(att_context_reg, C.reshape(q_attn,(-1,)))
         return \
-        C.as_block(att_context_reg,
+        C.as_block(res,
             [(c_processed, context), (q_processed, query)],
             'attention_layer',
-            'attention_layer'),\
-        C.as_block(q_attn, [(c_processed, context), (q_processed, query)],
-            'attention_weight',
-            'attention_weight')
+            'attention_layer')
     def build_model(self):
-        self.get_inputs()
+        phmap = self.get_inputs()
+        df = phmap['df']
+        qf = phmap['qf']
+        ab = phmap['ab']
+        ae = phmap['ae']
         #input layer
-        cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
-        c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+        cc = C.reshape(phmap['cc'], (1,-1)); qc = C.reshape(phmap['qc'], (1,-1))
+        c_processed, q_processed = self.input_layer(phmap['cgw'],phmap['cnw'],cc,\
+            phmap['qgw'],phmap['qnw'],qc).outputs
         c_processed = C.splice(c_processed, df)
         q_processed = C.splice(q_processed, qf)
         # attention layer output:[#,c][8*hidden_dim]
         att_context, wei1 = self.attention_layer(c_processed, q_processed,
             dimc=2*self.hidden_dim+3, dimq=2*self.hidden_dim+1,
-            common_dim=2*self.hidden_dim)
+            common_dim=2*self.hidden_dim).outputs
         # modeling layer output:[#][1] [#,c][2*hidden_dim]
         mod_context_reg = self.modeling_layer(att_context)
         # output layer
@@ -442,7 +449,11 @@ class BiElmo(BiDAF):
         res = dense2+context1
         return dense2
     def build_model(self):
-        self.get_inputs()
+        phmap = self.get_inputs()
+        cc = phmap['cc']
+        qc = phmap['qc']
+        ab = phmap['ab']
+        ae = phmap['ae']
         #seif.info['query'] = C.splice(qgw, qnw)
         #self.info['doc'] = C.splice(cgw, gnw)
         elmo_encoder = self.__elmo_fac.build()
@@ -451,14 +462,13 @@ class BiElmo(BiDAF):
         reduction_qc = C.reshape(qc, (-1,))
         c_elmo = elmo_encoder(reduction_cc)
         q_elmo = elmo_encoder(reduction_qc)
-        c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+        c_processed, q_processed = self.input_layer(phmap['cgw'],phmap['cnw'],cc,phmap['qgw'],phmap['qnw'],qc).outputs
 
         # attention layer
         c_enhance = C.splice(c_processed, c_elmo)
         q_enhance = C.splice(q_processed, q_elmo) 
-        att_context = self.attention_layer(c_enhance, q_enhance,
-            dimc= 2*self.hidden_dim+1024,dimq=2*self.hidden_dim+1024,
-            common_dim=2*self.hidden_dim+1024)
+        att_context, wei = self.attention_layer(c_enhance, q_enhance,
+            dim= 2*self.hidden_dim+1024).outputs
         self_context = self.self_attention_layer(att_context) # 2*hidden_dim
         # modeling layer
         mod_context = self.modeling_layer(self_context)
@@ -480,18 +490,27 @@ class BiSAF(BiFeature):
     def __init__(self, config_file):
         super(BiSAF, self).__init__(config_file)
     def build_model(self):
-        self.get_inputs()
-        c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
+        phmap = self.get_inputs()
+        df = phmap['df']
+        qf = phmap['qf']
+        ab = phmap['ab']
+        ae = phmap['ae']
+        #input layer
+        cc = C.reshape(phmap['cc'], (1,-1)); qc = C.reshape(phmap['qc'], (1,-1))
+        c_processed, q_processed = self.input_layer(phmap['cgw'],phmap['cnw'],cc,\
+            phmap['qgw'],phmap['qnw'],qc).outputs
         c_processed = C.splice(c_processed, df)
         q_processed = C.splice(q_processed, qf)
-        # attention layer output:[#,c][10*hidden_dim]
-        att_context, wei1 = self.attention_layer(c_processed, q_processed, dimc=2*self.hidden_dim+3,
+        self_context = self.multiHead(c_processed, c_processed, self.hidden_dim//2)
+        print(self_context)
+        self_context = C.splice(self_context, df)
+        # attention layer output:[#,c][8*hidden_dim]
+        att_context, wei1 = self.attention_layer(self_context, q_processed, dimc=2*self.hidden_dim+3,
             dimq=2*self.hidden_dim+1,
-            common_dim=2*self.hidden_dim)
-        self_context = self.multiHead(att_context, att_context) 
+            common_dim=2*self.hidden_dim).outputs
 
         # modeling layer
-        mod_context = self.modeling_layer(self_context)
+        mod_context = self.modeling_layer(att_context)
         mod_context = C.splice(mod_context, df)
 
         # output layer

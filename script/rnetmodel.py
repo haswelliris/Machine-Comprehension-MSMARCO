@@ -60,11 +60,10 @@ class RNet(polymath.PolyMath):
             'input_layer',
             'input_layer')
 
-
     def gate_attention_layer(self, inputs, memory, common_len=None, att_kind='simi'):
         # [#,c][2*d] [#,c][*=q,1]
         if att_kind=='dot':
-            qc_attn, attn_weight = self.dot_attention(inputs, memory).outputs
+            qc_attn, attn_weight = self.dot_attention(inputs, memory, self.hidden_dim).outputs
         else:
             qc_attn, attn_weight = self.simi_attention(inputs, memory).outputs
         if common_len is not None:
@@ -138,7 +137,6 @@ class RNet(polymath.PolyMath):
         ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
         input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
                         'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
-
         self._input_phs = input_phs
         seif.info['query'] = C.splice(qgw, qnw)
         self.info['doc'] = C.splice(cgw, gnw)
@@ -193,7 +191,7 @@ class RNetFeature(RNet):
         self.info['attn1'] = 1.0*wei1
         pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
         # self attention 
-        gate_self, wei2 = self.gate_attention_layer(pv,pv) # [#,c][4*hidden]
+        gate_self, wei2 = self.gate_attention_layer(pv,pv,att_kind='dot') # [#,c][4*hidden]
         self.info['attn2'] = 1.0*wei2
         ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
         init_pu = self.weighted_sum(pu)
