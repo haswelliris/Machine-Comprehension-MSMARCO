@@ -20,15 +20,27 @@ def argument_by_name(func, name):
     else:
         return found[0]
 def get_input_variables(func):
-    return {'cnw': argument_by_name(func,'cnw'),
+    print(func)
+    res =  {'cnw': argument_by_name(func,'cnw'),
             'qnw': argument_by_name(func,'qnw'),
             'cgw': argument_by_name(func,'cgw'),
             'qgw': argument_by_name(func,'qgw'),
             'cc':argument_by_name(func, 'cc'),
             'qc':argument_by_name(func,'qc'),
             'ab':argument_by_name(func,'ab'),
-            'ae':argument_by_name(func,'ae'),
-    }
+            'ae':argument_by_name(func,'ae') }
+    try:
+        df = argument_by_name(func, 'doc_feature')
+        res['df'] = df
+    except ValueError:
+        print('no df')
+    try:
+        qf = argument_by_name(func, 'query_feature')
+        res['qf'] = df
+    except ValueError:
+        print('no qf')
+    print(res)
+    return res
 
 def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=True):
     '''
@@ -83,12 +95,12 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                 if not line:
                     eof = True
                     break
-
+                '''
                 if misc is not None:
                     import re
                     misc['uid'].append(re.match('^([^\t]*)', line).groups()[0])
-
-                ctokens, qtokens, atokens, cwids, qwids,  baidx,   eaidx, ccids, qcids, qf, df = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
+                '''
+                ctokens, qtokens, atokens, cwids, qwids,  baidx, eaidx, ccids, qcids, qf, df = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
 
                 batch['cwids'].append(cwids)
                 batch['qwids'].append(qwids)
@@ -123,7 +135,8 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                     input_map[input_phs['df']] = batch['df']
                 yield input_map
             else:
-                yield {} # need to generate empty batch for distributed training
+                break
+    # yield {} # need to generate empty batch for distributed training
 from pprint import pprint
 def train(data_path, model_path, log_file, config_file, model_name, net, restore=False, profiling=False, gen_heartbeat=False, gpu=0):
     training_config = importlib.import_module(config_file).training_config
@@ -416,7 +429,6 @@ def get_answer(raw_text, tokens, start, end):
     except:
         import pdb
         pdb.set_trace()
-
 def test(test_data, model_path, model_file, config_file, net, gpu=0):
     training_config = importlib.import_module(config_file).training_config
     # config for using multi GPUs
@@ -447,7 +459,7 @@ def test(test_data, model_path, model_file, config_file, net, gpu=0):
     results = {}
     with open('{}_out.json'.format(model_file), 'w', encoding='utf-8') as json_output:
         for data in tsv_reader:
-            out = model.eval(data, outputs=[begin_logits,end_logits], as_numpy=False)
+            out = model.eval(data, outputs=[begin_logits,end_logits,loss], as_numpy=False)
             g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
             other_input_map = {begin_prediction: g[begin_prediction], end_prediction: g[end_prediction]}
             span = predicted_span.eval((other_input_map))

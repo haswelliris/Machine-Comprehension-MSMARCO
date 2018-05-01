@@ -171,16 +171,13 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
 
     if is_test:
         #uid, title, context, query = line.split('\t')
-
         # change for dev.tsv
         uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer= line.strip().split('\t')
-        answer = ''
+        # answer = ''
         begin_answer, end_answer = '0', '1'
-        # change for dev.tsv
-        raw_answer = ''
+        # raw_answer = ''
     else:
         uid, title, context, query, answer, raw_context, begin_answer, end_answer, raw_answer = line.strip().split('\t')
-        #uid, title, context, query, begin_answer, end_answer, answer = line.split('\t')
 
     ctokens = context.split(' ')
     qtokens = query.split(' ')
@@ -212,9 +209,10 @@ def tsv_iter(line, vocab, chars, is_test=False, misc={}):
         raise ValueError('problem with input line:\n%s' % line)
 
     if is_test and misc.keys():
-        misc['answer'] += [answer]
-        misc['rawctx'] += [context]
-        misc['ctoken'] += [ctokens]
+        misc['uid'].append(uid)
+        misc['answer']+=[answer]
+        misc['rawctx']+=[context]
+        misc['ctoken']+=[ctokens]
 
     qs,ds = FeatureMaker.extract_feature(qtokens, ctokens)
 

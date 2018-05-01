@@ -162,10 +162,12 @@ def convert(file, outfile, is_test):
                                 except:
                                     bad = True
                             if not bad:
+                                # print('[CONVERT]uid:{}'.format(j['query_id']))
                                 output = [str(j['query_id']), j['query_type'], ' '.join(nctokens),' '.join(qtokens),' '.join(nctokens[start:end]), normalized_context, str(start), str(end), normalized_answer]
+                                out.write("%s\n"%'\t'.join(output))
                     else:
                         output = [str(j['query_id']), j['query_type'], ' '.join(nctokens),' '.join(qtokens)]
-                    out.write("%s\n"%'\t'.join(output))
+                        out.write("%s\n"%'\t'.join(output))
 
 convert('train_v1.1.json.gz', 'train.tsv', False)
 convert('dev_v1.1.json.gz', 'dev.tsv', False)
