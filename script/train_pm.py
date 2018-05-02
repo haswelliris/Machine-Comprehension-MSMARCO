@@ -9,7 +9,7 @@ import os
 import argparse
 import importlib
 import time
-import json
+import json, pickle
 
 def argument_by_name(func, name):
     found = [arg for arg in func.arguments if arg.name == name]
