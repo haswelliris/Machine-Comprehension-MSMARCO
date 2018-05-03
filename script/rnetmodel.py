@@ -3,6 +3,7 @@ from cntk.layers import *
 from helpers import *
 import polymath
 import importlib
+from convert_elmo import ElmoEmbedder
 # =============== factory function ==============
 def create_birnn(runit_forward,runit_backward, name=''):
     with C.layers.default_options(initial_state=0.1):
@@ -22,14 +23,13 @@ class RNet(polymath.PolyMath):
 
         self.convs = model_config['char_convs']
         self.highway_layers = model_config['highway_layers']
+        self.attn_configs = model_config['attn_configs']
         self.info={}
-
     def charcnn(self, x):
         conv_out = C.layers.Sequential([
             C.layers.Dropout(self.dropout),
             C.layers.Convolution2D((5,self.char_emb_dim), self.convs, activation=C.relu, init=C.glorot_uniform(), bias=True, init_bias=0, name='charcnn_conv')])(x)
         return C.reduce_max(conv_out, axis=1) # workaround cudnn failure in GlobalMaxPooling
-
     def input_layer(self,cgw,cnw,cc,qgw,qnw,qc):
         cgw_ph = C.placeholder()
         cnw_ph = C.placeholder()
@@ -59,24 +59,21 @@ class RNet(polymath.PolyMath):
             [(cgw_ph, cgw),(cnw_ph, cnw),(cc_ph, cc),(qgw_ph, qgw),(qnw_ph, qnw),(qc_ph, qc)],
             'input_layer',
             'input_layer')
-
-    def gate_attention_layer(self, inputs, memory, common_len=None, att_kind='simi'):
+    def gate_attention_layer(self, inputs, memory, common_len, att_kind='simi'):
         # [#,c][2*d] [#,c][*=q,1]
         if att_kind=='dot':
-            qc_attn, attn_weight = self.dot_attention(inputs, memory, self.hidden_dim).outputs
+            qc_attn, attn_weight = self.dot_attention(inputs, memory, common_len).outputs
         else:
             qc_attn, attn_weight = self.simi_attention(inputs, memory).outputs
-        if common_len is not None:
-            inputs = inputs[:common_len]
-            qc_attn = qc_attn[:common_len]
+        inputs = inputs[:common_len]
+        qc_attn = qc_attn[:common_len]
         cont_attn = C.splice(inputs, qc_attn) # [#,c][4*d]
 
-        dense = Dropout(self.dropout) >> Dense(4*self.hidden_dim, activation=C.sigmoid, input_rank=1) >> Label('gate')
+        dense = Dropout(self.dropout) >> Dense(2*common_len, activation=C.sigmoid, input_rank=1) >> Label('gate')
         gate = dense(cont_attn) # [#, c][4*d]
         return gate*cont_attn, attn_weight
-
-    def reasoning_layer(self, inputs, input_dim):
-        input_ph = C.placeholder(shape=(input_dim,))
+    def reasoning_layer(self, inputs):
+        input_ph = C.placeholder()
         rnn = create_birnn(GRU(self.hidden_dim), GRU(self.hidden_dim),'reasoning_gru')
         block = Sequential([
                 LayerNormalization(name='layerbn'), Dropout(self.dropout), rnn
@@ -85,9 +82,8 @@ class RNet(polymath.PolyMath):
         return C.as_block(
             res,[(input_ph, inputs)], 'reasoning layer', 'reasoning layer'
         )
-    
     def weighted_sum(self, inputs):
-        input_ph = C.placeholder(shape=(self.hidden_dim*2,))
+        input_ph = C.placeholder()
         weight = Sequential([
             BatchNormalization(),
             Dropout(self.dropout), Dense(self.hidden_dim, activation=C.tanh),
@@ -97,12 +93,11 @@ class RNet(polymath.PolyMath):
         res = C.sequence.reduce_sum(weight*input_ph)
         return C.as_block(C.combine(res, weight),
             [(input_ph, inputs)], 'weighted sum','weighted sum')
-
-    def output_layer(self, init, memory):
+    def output_layer(self, init, memory, inplen):
 
         def pointer(inputs, state):
-            input_ph = C.placeholder(shape=(2*self.hidden_dim,))
-            state_ph = C.placeholder(shape=(2*self.hidden_dim,))
+            input_ph = C.placeholder()
+            state_ph = C.placeholder()
             state_expand = C.sequence.broadcast_as(state_ph, input_ph)
             weight = Sequential([
                 BatchNormalization(),
@@ -116,13 +111,12 @@ class RNet(polymath.PolyMath):
                 [(input_ph, inputs), (state_ph, state)],
                 'pointer', 'pointer')
         
-        gru = GRU(2*self.hidden_dim)
+        gru = GRU(inplen)
         inp, logits1 = pointer(memory, init).outputs
         state2 = gru(init, inp)
         logits2 = pointer(memory, state2).outputs[1]
 
         return logits1, logits2 
-
     def build_model(self):
         c = C.Axis.new_unique_dynamic_axis('c')
         q = C.Axis.new_unique_dynamic_axis('q')
@@ -142,16 +136,16 @@ class RNet(polymath.PolyMath):
         self.info['doc'] = C.splice(cgw, gnw)
         # graph
         pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
-        gate_pu, wei1 = self.gate_attention_layer(pu, qu) # [#,c][4*hidden]
+        gate_pu, wei1 = self.gate_attention_layer(pu, qu, common_len=2*self.hidden_dim,attn_kind=self.attn_configs[0]) # [#,c][4*hidden]
         self.info['attn1'] = wei1*1.0
         print('[RNet build]gate_pu:{}'.format(gate_pu))
-        pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
-        gate_self, wei2 = self.gate_attention_layer(pv,pv, att_kind='dot') # [#,c][4*hidden]
+        pv = self.reasoning_layer(gate_pu) # [#,c][2*hidden]
+        gate_self, wei2 = self.gate_attention_layer(pv,pv, common_len=2*self.hidden_dim, att_kind=self.attn_configs[1]) # [#,c][4*hidden]
         self.info['attn2'] = wei2*1.0
-        ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
+        ph = self.reasoning_layer(gate_self) # [#,c][2*hidden]
         init_pu = self.weighted_sum(pu)
         
-        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph) # [#, c][1]
+        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph, 2*self.hidden_dim) # [#, c][1]
         
         # loss
         start_loss = seq_loss(start_logits, ab)
@@ -187,16 +181,98 @@ class RNetFeature(RNet):
         # graph
         pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs
         enhance_pu = C.splice(pu,df); enhance_qu = C.splice(qu, qf)
-        gate_pu, wei1 = self.gate_attention_layer(enhance_pu, enhance_qu, common_len=2*self.hidden_dim) # [#,c][4*hidden]
+        gate_pu, wei1 = self.gate_attention_layer(enhance_pu, enhance_qu, common_len=2*self.hidden_dim,\
+            att_kind=self.attn_configs[0]) # [#,c][4*hidden]
         self.info['attn1'] = 1.0*wei1
-        pv = self.reasoning_layer(gate_pu, 4*self.hidden_dim) # [#,c][2*hidden]
+        pv = self.reasoning_layer(gate_pu) # [#,c][2*hidden]
         # self attention 
-        gate_self, wei2 = self.gate_attention_layer(pv,pv,att_kind='dot') # [#,c][4*hidden]
+        gate_self, wei2 = self.gate_attention_layer(pv,pv,common_len=2*self.hidden_dim, att_kind=self.attn_configs[1]) # [#,c][4*hidden]
         self.info['attn2'] = 1.0*wei2
-        ph = self.reasoning_layer(gate_self, 4*self.hidden_dim) # [#,c][2*hidden]
-        init_pu = self.weighted_sum(pu)
+        ph = self.reasoning_layer(gate_self) # [#,c][2*hidden]
+        enhance_ph = C.splice(ph, df)
+        init_pu = self.weighted_sum(enhance_pu)
 
-        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], ph) # [#, c][1]
+        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], enhance_ph, 2*self.hidden_dim+3) # [#, c][1]
+        self.info['start_logits'] = start_logits*1.0
+        self.info['end_logits'] = end_logits*1.0
+ 
+        # loss
+        start_loss = seq_loss(start_logits, ab)
+        end_loss = seq_loss(end_logits, ae)
+        # paper_loss = start_loss + end_loss
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
+        self._model = C.combine([start_logits,end_logits])
+        self._loss = new_loss
+        return self._model, self._loss, self._input_phs
+class RNetElmo(RNet):
+    def __init__(self, config_file):
+        super(RNetElmo, self).__init__(config_file)
+        self.__elmo_fac = ElmoEmbedder()
+    def input_layer(self,cgw,cnw,qgw,qnw):
+        cgw_ph = C.placeholder()
+        cnw_ph = C.placeholder()
+        qgw_ph = C.placeholder()
+        qnw_ph = C.placeholder()
+
+        input_glove_words = C.placeholder(shape=(self.wg_dim,))
+        input_nonglove_words = C.placeholder(shape=(self.wn_dim,))
+
+        # we need to reshape because GlobalMaxPooling/reduce_max is retaining a trailing singleton dimension
+        # todo GlobalPooling/reduce_max should have a keepdims default to False
+        embedded = self.word_glove()(input_glove_words, input_nonglove_words)
+        highway = HighwayNetwork(dim=self.word_emb_dim, highway_layers=self.highway_layers)(embedded)
+        highway_drop = C.layers.Dropout(self.dropout)(highway)
+        processed = OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='input_rnn')(highway_drop)
+
+        q_processed = processed.clone(C.CloneMethod.share, {input_glove_words:qgw_ph, input_nonglove_words:qnw_ph})
+        c_processed = processed.clone(C.CloneMethod.share, {input_glove_words:cgw_ph, input_nonglove_words:cnw_ph})
+
+        return C.as_block(
+            C.combine([c_processed, q_processed]),
+            [(cgw_ph, cgw),(cnw_ph, cnw),(qgw_ph, qgw),(qnw_ph, qnw)],
+            'input_layer',
+            'input_layer')
+    def build_model(self):
+        c = C.Axis.new_unique_dynamic_axis('c')
+        q = C.Axis.new_unique_dynamic_axis('q')
+        b = C.Axis.default_batch_axis()
+        cgw = C.input_variable(self.wg_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cgw')
+        cnw = C.input_variable(self.wn_dim, dynamic_axes=[b,c], is_sparse=self.use_sparse, name='cnw')
+        qgw = C.input_variable(self.wg_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qgw')
+        qnw = C.input_variable(self.wn_dim, dynamic_axes=[b,q], is_sparse=self.use_sparse, name='qnw')
+        cc = C.input_variable((1,self.word_size), dynamic_axes=[b,c], name='cc')
+        qc = C.input_variable((1,self.word_size), dynamic_axes=[b,q], name='qc')
+        ab = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ab')
+        ae = C.input_variable(self.a_dim, dynamic_axes=[b,c], name='ae')
+        qf = C.input_variable(1, dynamic_axes=[b,q], is_sparse=False, name='query_feature')
+        df = C.input_variable(3, dynamic_axes=[b,c], is_sparse=False, name='doc_feature')
+        input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
+                     'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae,
+                     'qf':qf, 'df':df}
+        self._input_phs = input_phs
+        self.info['query'] = C.splice(qgw, qnw)
+        self.info['doc'] = C.splice(cgw, cnw)
+        # graph
+        elmo_encoder = self.__elmo_fac.build()
+        #input layer
+        reduction_cc = C.reshape(cc,(-1,))
+        reduction_qc = C.reshape(qc, (-1,))
+        c_elmo = elmo_encoder(reduction_cc)
+        q_elmo = elmo_encoder(reduction_qc)
+        pu, qu = self.input_layer(cgw, cnw, qgw, qnw).outputs
+        enhance_pu = C.splice(pu,c_elmo,df); enhance_qu = C.splice(qu,q_elmo,qf)
+        gate_pu, wei1 = self.gate_attention_layer(enhance_pu, enhance_qu, common_len=2*self.hidden_dim+1024,\
+            att_kind=self.attn_configs[0]) # [#,c][4*hidden]
+        self.info['attn1'] = 1.0*wei1
+        pv = self.reasoning_layer(gate_pu) # [#,c][2*hidden]
+        # self attention 
+        gate_self, wei2 = self.gate_attention_layer(pv, pv,common_len=2*self.hidden_dim,att_kind=self.attn_configs[1]) # [#,c][4*hidden]
+        self.info['attn2'] = 1.0*wei2
+        ph = self.reasoning_layer(gate_self) # [#,c][2*hidden]
+        enhance_ph = C.splice(ph, c_elmo, df)
+        init_pu = self.weighted_sum(enhance_pu)
+
+        start_logits, end_logits  = self.output_layer(init_pu.outputs[0], enhance_ph, 2*self.hidden_dim+1027) # [#, c][1]
         self.info['start_logits'] = start_logits*1.0
         self.info['end_logits'] = end_logits*1.0
  

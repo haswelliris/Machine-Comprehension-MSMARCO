@@ -434,18 +434,42 @@ class BiFeature(BiDAF):
         self._model = res
         self._loss = new_loss
         return self._model, self._loss, self._input_phs
-class BiElmo(BiDAF):
+class BiElmo(BiFeature):
     def __init__(self, config_file):
         super(BiElmo, self).__init__(config_file)
         self.__elmo_fac = ElmoEmbedder()
+    def input_layer(self,cgw,cnw,qgw,qnw):
+        cgw_ph = C.placeholder()
+        cnw_ph = C.placeholder()
+        qgw_ph = C.placeholder()
+        qnw_ph = C.placeholder()
+
+        input_glove_words = C.placeholder(shape=(self.wg_dim,))
+        input_nonglove_words = C.placeholder(shape=(self.wn_dim,))
+
+        # we need to reshape because GlobalMaxPooling/reduce_max is retaining a trailing singleton dimension
+        # todo GlobalPooling/reduce_max should have a keepdims default to False
+        embedded = self.word_glove()(input_glove_words, input_nonglove_words)
+        highway = HighwayNetwork(dim=self.word_emb_dim, highway_layers=self.highway_layers)(embedded)
+        highway_drop = C.layers.Dropout(self.dropout)(highway)
+        processed = OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='input_rnn')(highway_drop)
+
+        q_processed = processed.clone(C.CloneMethod.share, {input_glove_words:qgw_ph, input_nonglove_words:qnw_ph})
+        c_processed = processed.clone(C.CloneMethod.share, {input_glove_words:cgw_ph, input_nonglove_words:cnw_ph})
+
+        return C.as_block(
+            C.combine([c_processed, q_processed]),
+            [(cgw_ph, cgw),(cnw_ph, cnw),(qgw_ph, qgw),(qnw_ph, qnw)],
+            'input_layer',
+            'input_layer')
     def self_attention_layer(self, context):
         dense = C.layers.Dense(2*self.hidden_dim, activation=C.relu)
         rnn = OptimizedRnnStack(self.hidden_dim,bidirectional=True, use_cudnn=self.use_cudnn)
         context1 = dense(context)
         process_context = rnn(context1)
         # residual attention
-        att_context, wei = self.attention_layer(process_context,process_context,self.hidden_dim*2).outputs
-        dense2 = C.layers.Dense(2*self.hidden_dim,activation=C.relu)(att_context)
+        att_context, wei = self.dot_attention(process_context,process_context,self.hidden_dim*2).outputs
+        dense2 = C.layers.Dense(self.hidden_dim*2,activation=C.relu)(att_context)
         res = dense2+context1
         return dense2
     def build_model(self):
@@ -454,7 +478,9 @@ class BiElmo(BiDAF):
         qc = phmap['qc']
         ab = phmap['ab']
         ae = phmap['ae']
-        #seif.info['query'] = C.splice(qgw, qnw)
+        df = phmap['df']
+        qf = phmap['qf']
+        #self.info['query'] = C.splice(qgw, qnw)
         #self.info['doc'] = C.splice(cgw, gnw)
         elmo_encoder = self.__elmo_fac.build()
         #input layer
@@ -462,17 +488,17 @@ class BiElmo(BiDAF):
         reduction_qc = C.reshape(qc, (-1,))
         c_elmo = elmo_encoder(reduction_cc)
         q_elmo = elmo_encoder(reduction_qc)
-        c_processed, q_processed = self.input_layer(phmap['cgw'],phmap['cnw'],cc,phmap['qgw'],phmap['qnw'],qc).outputs
+        c_processed, q_processed = self.input_layer(phmap['cgw'],phmap['cnw'],phmap['qgw'],phmap['qnw']).outputs
 
         # attention layer
-        c_enhance = C.splice(c_processed, c_elmo)
-        q_enhance = C.splice(q_processed, q_elmo) 
+        c_enhance = C.splice(c_processed, c_elmo, df)
+        q_enhance = C.splice(q_processed, q_elmo, qf)
         att_context, wei = self.attention_layer(c_enhance, q_enhance,
-            dim= 2*self.hidden_dim+1024).outputs
+            dimc= 2*self.hidden_dim+1027, dimq=2*self.hidden_dim+1025, common_dim=2*self.hidden_dim+1024).outputs
         self_context = self.self_attention_layer(att_context) # 2*hidden_dim
         # modeling layer
         mod_context = self.modeling_layer(self_context)
-        enhance_mod_context = C.splice(mod_context, c_elmo)
+        enhance_mod_context = C.splice(mod_context, c_elmo, df)
 
         # output layer
         start_logits, end_logits = self.output_layer(att_context, enhance_mod_context).outputs
@@ -485,10 +511,9 @@ class BiElmo(BiDAF):
         self._model = C.combine([start_logits,end_logits])
         self._loss = new_loss
         return self._model, self._loss, self._input_phs
-   
-class BiSAF(BiFeature):
+class BiSAF1(BiFeature):
     def __init__(self, config_file):
-        super(BiSAF, self).__init__(config_file)
+        super(BiSAF1, self).__init__(config_file)
     def build_model(self):
         phmap = self.get_inputs()
         df = phmap['df']
@@ -502,7 +527,6 @@ class BiSAF(BiFeature):
         c_processed = C.splice(c_processed, df)
         q_processed = C.splice(q_processed, qf)
         self_context = self.multiHead(c_processed, c_processed, self.hidden_dim//2)
-        print(self_context)
         self_context = C.splice(self_context, df)
         # attention layer output:[#,c][8*hidden_dim]
         att_context, wei1 = self.attention_layer(self_context, q_processed, dimc=2*self.hidden_dim+3,
@@ -511,6 +535,43 @@ class BiSAF(BiFeature):
 
         # modeling layer
         mod_context = self.modeling_layer(att_context)
+        mod_context = C.splice(mod_context, df)
+
+        # output layer
+        start_logits, end_logits = self.output_layer(att_context, mod_context).outputs
+
+        # loss
+        start_loss = seq_loss(start_logits, ab)
+        end_loss = seq_loss(end_logits, ae)
+        new_loss = all_spans_loss(start_logits, ab, end_logits, ae)
+        self._model = C.combine([start_logits,end_logits])
+        self._loss = new_loss
+        return self._model, self._loss, self._input_phs
+class BiSAF2(BiFeature):
+    def __init__(self, config_file):
+        super(BiSAF2, self).__init__(config_file)
+    def build_model(self):
+        phmap = self.get_inputs()
+        df = phmap['df']
+        qf = phmap['qf']
+        ab = phmap['ab']
+        ae = phmap['ae']
+        #input layer
+        cc = C.reshape(phmap['cc'], (1,-1)); qc = C.reshape(phmap['qc'], (1,-1))
+        c_processed, q_processed = self.input_layer(phmap['cgw'],phmap['cnw'],cc,\
+            phmap['qgw'],phmap['qnw'],qc).outputs
+        c_processed = C.splice(c_processed, df)
+        q_processed = C.splice(q_processed, qf)
+        # attention layer output:[#,c][8*hidden_dim]
+        att_context, wei1 = self.attention_layer(c_processed, q_processed, dimc=2*self.hidden_dim+3,
+            dimq=2*self.hidden_dim+1,
+            common_dim=2*self.hidden_dim).outputs
+        a = att_context[:4*self.hidden_dim]; b = att_context[4*self.hidden_dim:]
+        self_context = self.multiHead(a,a,self.hidden_dim//2)
+
+        # modeling layer
+        mod_inp = C.splice(self_context, b)
+        mod_context = self.modeling_layer(mod_inp)
         mod_context = C.splice(mod_context, df)
 
         # output layer

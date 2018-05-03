@@ -1,7 +1,7 @@
 import cntk as C
 import numpy as np
-from polymath import BiDAF, BiElmo, BiFeature, BiSAF
-from rnetmodel import RNet, RNetFeature
+from polymath import BiDAF, BiElmo, BiFeature, BiSAF1, BiSAF2
+from rnetmodel import RNet, RNetFeature, RNetElmo
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
 from helpers import print_para_info
 import tsv2ctf
@@ -484,12 +484,16 @@ def choose_model(config_file,net):
         polymath = RNet(config_file)
     if net=='RNetFeature':
         polymath = RNetFeature(config_file)
+    if net=='RNetElmo':
+        polymath = RNetElmo(config_file)
     if net=='BiFeature':
         polymath = BiFeature(config_file)
     if net=='BiElmo':
         polymath = BiElmo(config_file)
-    if net=='BiSAF':
-        polymath = BiSAF(config_file)
+    if net=='BiSAF1':
+        polymath = BiSAF1(config_file)
+    if net=='BiSAF2':
+        polymath = BiSAF2(config_file)
     return polymath
 if __name__=='__main__':
     # default Paths relative to current python file.
@@ -508,7 +512,7 @@ if __name__=='__main__':
     parser.add_argument('-model', '--model', help='Model file name, also used for saving', required=False, default='default')
     parser.add_argument('-gpu','--gpu', help='designate which gpu to use', type=int, default=0)
     parser.add_argument('-net', '--net', help='use chosen network model', required=False, default='BiDAF',
-                        choices=['BiDAF','RNet','RNetFeature','BiElmo', 'BiSAF','BiFeature'])
+                        choices=['BiDAF','RNet','RNetFeature','RNetElmo','BiElmo', 'BiSAF1','BiSAF2','BiFeature'])
     args = vars(parser.parse_args())
     model_path = os.path.join(args['outputdir'],"models")
     if args['datadir'] is not None:

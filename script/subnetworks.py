@@ -32,11 +32,3 @@ class IndRNN(object):
             h_t = C.times(x, input_kernel) + bias + recur_kernel*h
             return h_t
         return runit
-
-from polymath import PolyMath
-import helpers
-class BiLM(PolyMath):
-    def __init__(self,config_file):
-        super(BiLM, self).__init__(config_file)
-    def bilm(self, sequence):
-        highway = helpers.HighwayNetwork(self.word_emb_dim+self.convs)
