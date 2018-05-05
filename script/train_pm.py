@@ -127,6 +127,13 @@ def train(data_path, model_path, log_file, config_file, model_name, net, restore
     train_data_ext = os.path.splitext(train_data_file)[-1].lower()
     model_file = os.path.join(model_path, model_name)
     print(model_file)
+    # record
+    epoch_stat = {
+        'best_val_err' : 100,
+        'best_since'   : 0,
+        'val_since'    : 0,
+        'record_num'   : 0,
+        'epoch':0}
 
     # training setting
     polymath = choose_model(config_file, net)
@@ -136,10 +143,12 @@ def train(data_path, model_path, log_file, config_file, model_name, net, restore
         z = polymath.model
         loss = polymath.loss
         input_phs = polymath.input_phs
+        model = z
         #after restore always re-evaluate
         epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), polymath,config_file)
     else:
         z, loss, input_phs = polymath.build_model()
+        model = C.combine(list(z.outputs) + [loss.output])
 
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']
@@ -176,16 +185,6 @@ def train(data_path, model_path, log_file, config_file, model_name, net, restore
 
     if profiling:
         C.debugging.start_profiler(sync_gpu=True)
-
-    model = C.combine(list(z.outputs) + [loss.output])
-    # record
-    epoch_stat = {
-        'best_val_err' : 100,
-        'best_since'   : 0,
-        'val_since'    : 0,
-        'record_num'   : 0,
-        'epoch':0}
-
 
 
     def post_epoch_work(epoch_stat):

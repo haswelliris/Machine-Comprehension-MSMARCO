@@ -48,6 +48,9 @@ class PolyMath(object):
         self.info = {} # use to record information 
     def word_glove(self):
         # load glove
+        if os.path.isfile('glove300.model'):
+            print('[BUILD] load glove300.model')
+            return C.load_model('glove300.model')
         npglove = np.zeros((self.wg_dim, self.word_emb_dim), dtype=np.float32)
         with open(os.path.join(self.abs_path, self.word_embed_file), encoding='utf-8') as f:
             for line in f:
@@ -60,6 +63,9 @@ class PolyMath(object):
         @C.Function
         def func(wg, wn):
             return C.times(wg, glove) + C.times(wn, nonglove)
+        
+        func.save('glove300.model')
+        print('[BUILD] save glove300.model')
         return func
     def char_glove(self):
         npglove = np.zeros((self.c_dim, self.char_emb_dim), dtype=np.float32)
@@ -308,13 +314,14 @@ class BiDAF(PolyMath):
         mod_context = C.placeholder()
         #output layer [#,c][1]
         start_logits = C.layers.Dense(1, name='out_start')(C.dropout(C.splice(mod_context, att_context), self.dropout))
-
+        start_logits = C.sequence.softmax(start_logits)
         start_hardmax = seq_hardmax(start_logits) # [000010000]
         att_mod_ctx = C.sequence.last(C.sequence.gather(mod_context, start_hardmax)) # [#][2*hidden_dim]
         att_mod_ctx_expanded = C.sequence.broadcast_as(att_mod_ctx, att_context)
         end_input = C.splice(att_context, mod_context, att_mod_ctx_expanded, mod_context * att_mod_ctx_expanded) # [#, c][14*hidden_dim]
         m2 = OptimizedRnnStack(self.hidden_dim, bidirectional=True, use_cudnn=self.use_cudnn, name='output_rnn')(end_input)
         end_logits = C.layers.Dense(1, name='out_end')(C.dropout(C.splice(m2, att_context), self.dropout))
+        end_logits = C.sequence.softmax(end_logits)
 
         return C.as_block(
             C.combine([start_logits, end_logits]),
