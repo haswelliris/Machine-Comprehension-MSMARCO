@@ -405,8 +405,8 @@ def save_info(polymath, data):
                     _,indx = np.nonzero(dd)
                     doc_ind.append(indx.copy())
             else:
-                res = v.eval(data).values()
-                weights.append(tuple([v[0] for v in res])) # many kinds of weights 
+                res = v.eval(data)
+                weights.append(tuple(res)) # many kinds of weights 
         save_flag = True
         while save_flag:
             os.system('ls -la  >> log.log')

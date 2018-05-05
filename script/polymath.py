@@ -388,6 +388,8 @@ class BiFeature(BiDAF):
                      'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae, 'sl':slc,
                      'qf':qf, 'df':df}
         self._input_phs = input_phs
+        self.info['query']=C.splice(qgw,qnw)
+        self.info['doc']=C.splice(cgw, cnw)
         #input layer
         cc = C.reshape(cc, (1,-1)); qc = C.reshape(qc, (1,-1))
         c_processed, q_processed = self.input_layer(cgw,cnw,cc,qgw,qnw,qc).outputs
@@ -421,6 +423,7 @@ class BiFeature(BiDAF):
         end_logits = end_logits/logits_flag 
         self.info['start'] = start_logits*1.0
         self.info['end'] = end_logits*1.0
+        self.info['cls_logits'] = mod_cls_logits
 
         # loss
         cls_loss = focal_loss(mod_cls_logits,slc)

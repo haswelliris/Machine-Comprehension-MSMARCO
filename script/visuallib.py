@@ -14,21 +14,25 @@ def visualize(pklname, i2w):
     with open(pklname, 'rb') as f:
         # [array(len)] allWei:[(embed, attn)...]
         allQid, allDid, allWei = pickle.load(f)
-    
-    for qids, dids, mm in zip(allQid, allDid, allWei): # different weights
-        columns = [i2w.get(wid, '<UNK>') for wid in qids]
-        index = [i2w.get(wid,'<UNK>') for wid in dids] 
-        for emb,ww in zip(mm): # different sequence
-            if len(columns)==ww.shape[1]:
+    for i, ids in enumerate(zip(allQid, allDid)): # different weights
+        columns = [i2w.get(wid, '<UNK>') for wid in ids[0]]
+        index = [i2w.get(wid,'<UNK>') for wid in ids[1]] 
+        for j in range(len(allWei)): # different sequence
+            ww = allWei[j][i]
+            if len(columns)==ww.shape[1] and len(index)==ww.shape[0]:
                 dframe = pd.DataFrame(data=ww, columns=columns, index=index)
-            elif len(index)==ww.shape[1]:
+            elif len(index)==ww.shape[1] and len(columns)==ww.shape[0]:
                 dframe = pd.DataFrame(data=ww, columns=index, index=columns)
-            elif len(columns)==emb.shape[1]:
-                dframe = pd.DataFrame(data=emb, columns=columns, index=index)
-            elif len(index)==embed.shape[1]:
-                dframe = pd.DataFrame(data=ww, columns=index, index=columns)
+            elif len(index)==ww.shape[1] and len(index)==ww.shape[0]:
+                dframe = pd.DataFrame(data=ww, columns=index, index=index)
             else:
-                continue
+                dframe = pd.DataFrame(data=ww, index=index, columns=['score'])
+
             sns.heatmap(dframe)
             plt.show()
+            
+            a=input('if want to save to csv {y/n}:')
+            if a=='y':
+                save_name=input('csv name:')
+                dframe.to_csv(save_name+'.csv')
     
