@@ -2,6 +2,36 @@ import numpy as np
 import cntk as C
 from cntk.layers.blocks import _INFERRED
 from pprint import pprint
+def argument_by_name(func, name):
+    found = [arg for arg in func.arguments if arg.name == name]
+    if len(found) == 0:
+        raise ValueError('no matching names in arguments')
+    elif len(found) > 1:
+        raise ValueError('multiple matching names in arguments')
+    else:
+        return found[0]
+def get_input_variables(func):
+    print(func)
+    res =  {'cnw': argument_by_name(func,'cnw'),
+            'qnw': argument_by_name(func,'qnw'),
+            'cgw': argument_by_name(func,'cgw'),
+            'qgw': argument_by_name(func,'qgw'),
+            'cc':argument_by_name(func, 'cc'),
+            'qc':argument_by_name(func,'qc'),
+            'ab':argument_by_name(func,'ab'),
+            'ae':argument_by_name(func,'ae') }
+    try:
+        df = argument_by_name(func, 'doc_feature')
+        res['df'] = df
+    except ValueError:
+        print('no df')
+    try:
+        qf = argument_by_name(func, 'query_feature')
+        res['qf'] = df
+    except ValueError:
+        print('no qf')
+    print(res)
+    return res
 def print_para_info(dummy, ema):
 	'''
 	@dummy: the ops combines parameters

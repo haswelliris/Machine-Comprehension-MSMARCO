@@ -3,44 +3,13 @@ import numpy as np
 from polymath import BiDAF, BiElmo, BiFeature, BiSAF1, BiSAF2
 from rnetmodel import RNet, RNetFeature, RNetElmo
 from squad_utils import metric_max_over_ground_truths, f1_score, exact_match_score
-from helpers import print_para_info
+from helpers import print_para_info, argument_by_name, get_input_variables
 import tsv2ctf
 import os
 import argparse
 import importlib
 import time
 import json, pickle
-
-def argument_by_name(func, name):
-    found = [arg for arg in func.arguments if arg.name == name]
-    if len(found) == 0:
-        raise ValueError('no matching names in arguments')
-    elif len(found) > 1:
-        raise ValueError('multiple matching names in arguments')
-    else:
-        return found[0]
-def get_input_variables(func):
-    print(func)
-    res =  {'cnw': argument_by_name(func,'cnw'),
-            'qnw': argument_by_name(func,'qnw'),
-            'cgw': argument_by_name(func,'cgw'),
-            'qgw': argument_by_name(func,'qgw'),
-            'cc':argument_by_name(func, 'cc'),
-            'qc':argument_by_name(func,'qc'),
-            'ab':argument_by_name(func,'ab'),
-            'ae':argument_by_name(func,'ae') }
-    try:
-        df = argument_by_name(func, 'doc_feature')
-        res['df'] = df
-    except ValueError:
-        print('no df')
-    try:
-        qf = argument_by_name(func, 'query_feature')
-        res['qf'] = df
-    except ValueError:
-        print('no qf')
-    print(res)
-    return res
 
 def create_mb_and_map(input_phs, data_file, polymath, randomize=True, repeat=True):
     '''
@@ -160,9 +129,17 @@ def train(data_path, model_path, log_file, config_file, model_name, net, restore
     print(model_file)
 
     # training setting
-
     polymath = choose_model(config_file, net)
-    z, loss, input_phs = polymath.build_model()
+    if restore and os.path.isfile(model_file):
+        print('reload model {}'.format(model_file))
+        polymath.set_model(C.load_model(model_file))
+        z = polymath.model
+        loss = polymath.loss
+        input_phs = polymath.input_phs
+        #after restore always re-evaluate
+        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), polymath,config_file)
+    else:
+        z, loss, input_phs = polymath.build_model()
 
     max_epochs = training_config['max_epochs']
     log_freq = training_config['log_freq']
@@ -209,10 +186,7 @@ def train(data_path, model_path, log_file, config_file, model_name, net, restore
         'record_num'   : 0,
         'epoch':0}
 
-    if restore and os.path.isfile(model_file+'.ckp'):
-        trainer.restore_from_checkpoint(model_file+'.ckp')
-        #after restore always re-evaluate
-        epoch_stat['best_val_err'] = validate_model(os.path.join(data_path, training_config['val_data']), polymath,config_file)
+
 
     def post_epoch_work(epoch_stat):
         epoch_stat['val_since'] += 1

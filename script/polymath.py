@@ -158,6 +158,10 @@ class PolyMath(object):
         return C.as_block(res,[(cph, context),(qph, query)],'multiHead','multiHead')
     def build_model(self):
         raise NotImplementedError
+    def set_model(self, model):
+        self._model=model
+        self._input_phs=get_input_variables(model)
+        self._loss=model.outputs[2]
     @property
     def model(self):
         if not self._model:
