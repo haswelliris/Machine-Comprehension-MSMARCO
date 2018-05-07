@@ -132,7 +132,7 @@ class RNet(polymath.PolyMath):
         input_phs = {'cgw':cgw, 'cnw':cnw, 'qgw':qgw, 'qnw':qnw,
                         'cc':cc, 'qc':qc, 'ab':ab, 'ae':ae}
         self._input_phs = input_phs
-        seif.info['query'] = C.splice(qgw, qnw)
+        self.info['query'] = C.splice(qgw, qnw)
         self.info['doc'] = C.splice(cgw, gnw)
         # graph
         pu, qu = self.input_layer(cgw, cnw, cc, qgw, qnw, qc).outputs

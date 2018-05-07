@@ -474,13 +474,14 @@ class BiElmo(BiFeature):
             'input_layer',
             'input_layer')
     def self_attention_layer(self, context):
-        dense = C.layers.Dense(2*self.hidden_dim, activation=C.relu)
+        dense = C.layers.Dense(self.hidden_dim, activation=C.relu)
         rnn = OptimizedRnnStack(self.hidden_dim,bidirectional=True, use_cudnn=self.use_cudnn)
         context1 = dense(context)
         process_context = rnn(context1)
         # residual attention
-        att_context, wei = self.dot_attention(process_context,process_context,self.hidden_dim*2).outputs
-        dense2 = C.layers.Dense(self.hidden_dim*2,activation=C.relu)(att_context)
+        att_context, wei = self.dot_attention(process_context,process_context,\
+            self.hidden_dim).outputs
+        dense2 = C.layers.Dense(self.hidden_dim, activation=C.relu)(att_context)
         res = dense2+context1
         return dense2
     def build_model(self):
@@ -505,7 +506,8 @@ class BiElmo(BiFeature):
         c_enhance = C.splice(c_processed, c_elmo, df)
         q_enhance = C.splice(q_processed, q_elmo, qf)
         att_context, wei = self.attention_layer(c_enhance, q_enhance,
-            dimc= 2*self.hidden_dim+1027, dimq=2*self.hidden_dim+1025, common_dim=2*self.hidden_dim+1024).outputs
+            dimc= 2*self.hidden_dim+1027, dimq=2*self.hidden_dim+1025,\
+            common_dim=2*self.hidden_dim+1024).outputs
         self_context = self.self_attention_layer(att_context) # 2*hidden_dim
         # modeling layer
         mod_context = self.modeling_layer(self_context)

@@ -4,6 +4,7 @@ import numpy as np
 import nltk
 import re
 import bisect
+import argparse
 
 def smith_waterman(tt,bb):
     # adapted from https://gist.github.com/radaniba/11019717
@@ -125,13 +126,13 @@ def trim_empty(tokens):
     return [t for t in tokens if t != '']
 
 def convert(file, outfile, is_test):
-    with gzip.open(file,'rb') as f:
+    with open(file,'r', encoding='utf8') as f:
         with open(outfile, 'w', encoding='utf-8') as out:
             for i,line in enumerate(f):
-                j = json.loads(line.decode('utf-8'))
+                j = json.loads(line)
                 p = j['passages']
             
-                if j['query_type'] == 'description':
+                if j['query_type'].lower() == 'description':
                     context = preprocess(' '.join([pp['passage_text'] for pp in p]))
                     ctokens = trim_empty(tokenize(context, context_mode=True))
                     normalized_context = ' '.join(ctokens)
@@ -168,7 +169,15 @@ def convert(file, outfile, is_test):
                     else:
                         output = [str(j['query_id']), j['query_type'], ' '.join(nctokens),' '.join(qtokens)]
                         out.write("%s\n"%'\t'.join(output))
-
+'''
 convert('train_v1.1.json.gz', 'train.tsv', False)
 convert('dev_v1.1.json.gz', 'dev.tsv', False)
 convert('test_public_v1.1.json.gz', 'test.tsv', True)
+'''
+if __name__ == '__main__':
+    parser=argparse.ArgumentParser()
+    parser.add_argument('source',help='source json file')
+    parser.add_argument('dest', help='destination tsv file')
+    parser.add_argument('--test',help='if is test dataset',action='store_true')
+    args = parser.parse_args()
+    convert(args.source, args.dest, args.test)
