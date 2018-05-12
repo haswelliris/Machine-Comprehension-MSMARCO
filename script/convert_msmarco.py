@@ -105,11 +105,8 @@ def smith_waterman(tt,bb):
     # corresponds to the optimal local sequence alignment.
     (x,y), (w,z) = traceback(score_matrix, start_pos, tt, bb)
     return (x,w), (y,z), score_matrix[w][z]
-
-
 def preprocess(s):
     return s.replace("''", '" ').replace("``", '" ')
-
 def tokenize(s, context_mode=False ):
     nltk_tokens=[t.replace("''", '"').replace("``", '"') for t in nltk.wordpunct_tokenize(s)]
     additional_separators = (
@@ -121,23 +118,19 @@ def tokenize(s, context_mode=False ):
     assert(not any([' ' in t for t in tokens]))
     assert (not any(['\t' in t for t in tokens]))
     return tokens
-
 def trim_empty(tokens):
     return [t for t in tokens if t != '']
-
 def convert(file, outfile, is_test):
     with open(file,'r', encoding='utf8') as f:
         with open(outfile, 'w', encoding='utf-8') as out:
             for i,line in enumerate(f):
                 j = json.loads(line)
                 p = j['passages']
-            
                 if j['query_type'].lower() == 'description':
                     context = preprocess(' '.join([pp['passage_text'] for pp in p]))
                     ctokens = trim_empty(tokenize(context, context_mode=True))
                     normalized_context = ' '.join(ctokens)
                     nctokens = normalized_context.split()
-
                     query   = preprocess(j['query'])
                     qtokens =  trim_empty(tokenize(query))
 

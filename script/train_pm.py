@@ -69,7 +69,8 @@ def create_tsv_reader(input_phs, tsv_file, polymath, seqs, num_workers, is_test=
                     import re
                     misc['uid'].append(re.match('^([^\t]*)', line).groups()[0])
                 '''
-                ctokens, qtokens, atokens, cwids, qwids,  baidx, eaidx, ccids, qcids, qf, df = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
+                ctokens, qtokens, atokens, cwids, qwids,  baidx, eaidx, ccids, qcids, qf, df \
+                    = tsv2ctf.tsv_iter(line, polymath.vocab, polymath.chars, is_test, misc)
 
                 batch['cwids'].append(cwids)
                 batch['qwids'].append(qwids)
@@ -425,14 +426,14 @@ def test(test_data, model_path, model_file, config_file, net, gpu=0):
     best_span_score = symbolic_best_span(begin_prediction, end_prediction)
     predicted_span = C.layers.Recurrence(C.plus)(begin_prediction - C.sequence.past_value(end_prediction))
 
-    batch_size = 32 # in sequences
+    batch_size = 5 # in sequences
     misc = {'rawctx':[], 'ctoken':[], 'answer':[], 'uid':[]}
     input_phs = get_input_variables(loss) # TODO check if this is consistent with test
     tsv_reader = create_tsv_reader(input_phs, test_data, polymath, batch_size, 1, is_test=True, misc=misc)
     results = {}
     with open('{}_out.json'.format(model_file), 'w', encoding='utf-8') as json_output:
         for data in tsv_reader:
-            out = model.eval(data, outputs=[begin_logits,end_logits,loss], as_numpy=False)
+            out = model.eval(data, outputs=[begin_logits,end_logits,loss], as_numpy=True)
             g = best_span_score.grad({begin_prediction:out[begin_logits], end_prediction:out[end_logits]}, wrt=[begin_prediction,end_prediction], as_numpy=False)
             other_input_map = {begin_prediction: g[begin_prediction], end_prediction: g[end_prediction]}
             span = predicted_span.eval((other_input_map))
@@ -443,6 +444,8 @@ def test(test_data, model_path, model_file, config_file, net, gpu=0):
                 predict_answer = get_answer(raw_text, ctokens, span_begin, span_end)
                 results['query_id'] = int(uid)
                 results['answers'] = [predict_answer]
+                results['score'] = float(np.max(out[begin_logits][seq]))+float(np.max(out[end_logits][seq]))
+                print('[ANSWER] {} {}'.format(results['query_id'], results['answers']))
                 json.dump(results, json_output)
                 json_output.write("\n")
             misc['rawctx'] = []
